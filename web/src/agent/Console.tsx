@@ -5,6 +5,7 @@ import { api, connectLive, type View } from '../api';
 import { Avatar, Icon, Mark, slaLabel, useNow, useTheme, useToast } from '../ui';
 import { NewTicketDialog } from './NewTicket';
 import { Palette } from './Palette';
+import { AssetsPage, AuditPage, AutomationPage, ChangesPage, ProblemsPage, RequestsPage } from './Itsm';
 import { IncidentsPage, KnowledgePage, PeoplePage, ReportsPage } from './Pages';
 import { SettingsPage } from './Settings';
 import { TicketPane } from './TicketPane';
@@ -12,7 +13,8 @@ import { TicketPane } from './TicketPane';
 export type Route =
   | { page: 'queue'; view: View; id?: number }
   | { page: 'kb'; id?: number }
-  | { page: 'reports' } | { page: 'people' } | { page: 'incidents' } | { page: 'settings' };
+  | { page: 'reports' } | { page: 'people' } | { page: 'incidents' } | { page: 'settings' }
+  | { page: 'requests' } | { page: 'devices'; id?: number } | { page: 'problems'; id?: number } | { page: 'changes' } | { page: 'automation' } | { page: 'audit' };
 
 export function parseAgentRoute(hash: string): Route {
   const parts = hash.replace(/^#\/?/, '').split('/');
@@ -21,6 +23,12 @@ export function parseAgentRoute(hash: string): Route {
   if (parts[0] === 'people') return { page: 'people' };
   if (parts[0] === 'incidents') return { page: 'incidents' };
   if (parts[0] === 'settings') return { page: 'settings' };
+  if (parts[0] === 'requests') return { page: 'requests' };
+  if (parts[0] === 'devices') return { page: 'devices', id: Number(parts[1]) || undefined };
+  if (parts[0] === 'problems') return { page: 'problems', id: Number(parts[1]) || undefined };
+  if (parts[0] === 'changes') return { page: 'changes' };
+  if (parts[0] === 'automation') return { page: 'automation' };
+  if (parts[0] === 'audit') return { page: 'audit' };
   const view = (parts[0] === 'q' && parts[1] ? decodeURIComponent(parts[1]) : 'all') as View;
   return { page: 'queue', view, id: Number(parts[2]) || undefined };
 }
@@ -134,7 +142,7 @@ export function Console({ user, onUser }: { user: User; onUser: (u: User | null)
   const counts = useMemo(() => Object.fromEntries(VIEWS.map((v) => [v.view, kpis && v.count ? v.count(kpis) : 0])), [kpis]);
 
   const navItem = (path: string, on: boolean, icon: string, label: string, extra?: ReactNode) => (
-    <a href={`#${path}`} className={`it${on ? ' on' : ''}`} aria-current={on ? 'page' : undefined}><Icon name={icon} />{label}{extra}</a>
+    <a key={path} href={`#${path}`} className={`it${on ? ' on' : ''}`} aria-current={on ? 'page' : undefined}><Icon name={icon} />{label}{extra}</a>
   );
 
   return (
@@ -144,10 +152,18 @@ export function Console({ user, onUser }: { user: User; onUser: (u: User | null)
         <button className="jump" onClick={() => setPalette(true)}>Search or jump to… <kbd>Ctrl K</kbd></button>
         {VIEWS.map((v) => navItem(`/q/${v.view}`, route.page === 'queue' && view === v.view, v.icon, v.label,
           counts[v.view] ? <em className={v.hot && kpis && kpis.breached ? 'hot' : ''}>{counts[v.view]}</em> : null))}
+        <div className="grp">Service</div>
+        {navItem('/requests', route.page === 'requests', 'cart', 'Requests')}
+        {navItem('/devices', route.page === 'devices', 'device', 'Devices')}
+        {navItem('/problems', route.page === 'problems', 'layers', 'Problems')}
+        {navItem('/changes', route.page === 'changes', 'calendar', 'Changes')}
         {navItem('/kb', route.page === 'kb', 'book', 'Knowledge base')}
+        <div className="grp">Desk</div>
         {navItem('/reports', route.page === 'reports', 'chart', 'Reports')}
+        {navItem('/automation', route.page === 'automation', 'wand', 'Automation')}
         {navItem('/people', route.page === 'people', 'users', 'People')}
-        {navItem('/settings', route.page === 'settings', 'gear', 'Settings & email')}
+        {user.role === 'admin' && navItem('/audit', route.page === 'audit', 'shield', 'Audit log')}
+        {navItem('/settings', route.page === 'settings', 'gear', 'Settings & security')}
         <div className="grp incidents">Live incidents</div>
         {activeIncidents.map((i) => (
           <a key={i.id} href={`#/q/incident:${i.id}`} className={`it incidents${view === `incident:${i.id}` ? ' on' : ''}`}><span className="dot live" />{i.title}<em>{i.linked}</em></a>
@@ -216,6 +232,12 @@ export function Console({ user, onUser }: { user: User; onUser: (u: User | null)
       {route.page === 'people' && <PeoplePage user={user} />}
       {route.page === 'incidents' && <IncidentsPage incidents={incidents} onChanged={loadSide} />}
       {route.page === 'settings' && <SettingsPage user={user} onUser={onUser} />}
+      {route.page === 'requests' && <RequestsPage user={user} />}
+      {route.page === 'devices' && <AssetsPage key={route.id ?? 0} id={route.id} />}
+      {route.page === 'problems' && <ProblemsPage key={route.id ?? 0} id={route.id} />}
+      {route.page === 'changes' && <ChangesPage user={user} />}
+      {route.page === 'automation' && <AutomationPage user={user} />}
+      {route.page === 'audit' && <AuditPage />}
 
       {palette && <Palette onClose={() => setPalette(false)} onNew={() => { setPalette(false); setCreating(true); }} />}
       {creating && <NewTicketDialog onClose={() => setCreating(false)} onCreated={(t) => { setCreating(false); loadList(); loadSide(); go(`/q/all/${t.id}`); toast(`${t.key} created`); }} />}

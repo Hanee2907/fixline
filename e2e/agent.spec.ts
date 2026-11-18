@@ -77,7 +77,7 @@ test('attachments, email in and out, and working hours settings', async ({ page 
   await expect(page.getByRole('img', { name: 'event-log.png' })).toBeVisible();
 
   // Email into the desk becomes a ticket; the confirmation is in the outbox.
-  await page.getByRole('link', { name: 'Settings & email' }).click();
+  await page.getByRole('link', { name: 'Settings & security' }).click();
   await expect(page.getByRole('heading', { name: /Working hours/ })).toBeVisible();
   await page.getByRole('button', { name: 'Send test email' }).click();
   await expect(page.getByText('It arrived as a new ticket in the queue.')).toBeVisible();

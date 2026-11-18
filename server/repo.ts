@@ -4,17 +4,20 @@ import type { Hours } from '../shared/hours.js';
 import { toHours, type HoursRow } from './auth.js';
 import type { CheckedFile } from './files.js';
 
-const iso = (v: unknown): string => new Date(v as string).toISOString();
-const isoOrNull = (v: unknown): string | null => (v == null ? null : iso(v));
+export const safeJson = <T,>(v: string | null | undefined, fallback: T): T => { try { return v ? (JSON.parse(v) as T) : fallback; } catch { return fallback; } };
+export const iso = (v: unknown): string => new Date(v as string).toISOString();
+export const isoOrNull = (v: unknown): string | null => (v == null ? null : iso(v));
 
 export const TICKET_SELECT = `
   t.*, w.prefix,
   r.name AS r_name, r.email AS r_email, r.role AS r_role, r.department AS r_dept,
-  a.name AS a_name, a.email AS a_email, a.role AS a_role, a.department AS a_dept
+  a.name AS a_name, a.email AS a_email, a.role AS a_role, a.department AS a_dept,
+  ap.name AS ap_name, ap.email AS ap_email, ap.role AS ap_role, ap.department AS ap_dept
   FROM tickets t
   JOIN workspaces w ON w.id = t.workspace_id
   JOIN users r ON r.id = t.requester_id
-  LEFT JOIN users a ON a.id = t.assignee_id`;
+  LEFT JOIN users a ON a.id = t.assignee_id
+  LEFT JOIN users ap ON ap.id = t.approver_id`;
 
 type Row = Record<string, unknown>;
 
@@ -46,6 +49,15 @@ export function toTicket(r: Row): Ticket {
     resolution: r.resolution as string,
     rating: (r.rating as Ticket['rating']) ?? null,
     incidentId: (r.incident_id as number) ?? null,
+    kind: (r.kind as Ticket['kind']) ?? 'incident',
+    catalogItemId: (r.catalog_item_id as number) ?? null,
+    form: safeJson<Record<string, string>>(r.form as string, {}),
+    approval: (r.approval as Ticket['approval']) ?? null,
+    approver: r.approver_id
+      ? { id: r.approver_id as number, name: r.ap_name as string, email: r.ap_email as string, role: r.ap_role as Role, department: r.ap_dept as string }
+      : null,
+    assetId: (r.asset_id as number) ?? null,
+    problemId: (r.problem_id as number) ?? null,
   };
 }
 
@@ -110,12 +122,12 @@ export const toIncident = (r: Row): Incident => ({
   createdAt: iso(r.created_at), resolvedAt: isoOrNull(r.resolved_at), linked: Number(r.linked ?? 0),
 });
 
-export async function listPeople(db: Db, workspaceId: number): Promise<(Person & { open: number })[]> {
+export async function listPeople(db: Db, workspaceId: number): Promise<(Person & { open: number; managerId: number | null })[]> {
   const { rows } = await db.query<Row>(
-    `SELECT u.id, u.name, u.email, u.role, u.department,
+    `SELECT u.id, u.name, u.email, u.role, u.department, u.manager_id,
             (SELECT count(*) FROM tickets t WHERE t.assignee_id = u.id AND t.status <> 'solved') AS open
        FROM users u WHERE u.workspace_id = $1 ORDER BY (u.role = 'requester'), u.name`,
     [workspaceId],
   );
-  return rows.map((r) => ({ id: r.id as number, name: r.name as string, email: r.email as string, role: r.role as Role, department: r.department as string, open: Number(r.open) }));
+  return rows.map((r) => ({ id: r.id as number, name: r.name as string, email: r.email as string, role: r.role as Role, department: r.department as string, open: Number(r.open), managerId: (r.manager_id as number) ?? null }));
 }

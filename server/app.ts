@@ -23,8 +23,15 @@ import {
   TICKET_SELECT, addMessage, getTicket, listAttachments, listMessages, listPeople, saveAttachments, toArticle, toIncident, toTicket, workspaceHours,
 } from './repo.js';
 import { kpis, reports } from './stats.js';
+import { createChallenge } from './modules/security.js';
+import { MODULES, type ModuleContext } from './modules/index.js';
 
-type Env = { Variables: { user: User } };
+export type Env = { Variables: { user: User } };
+
+const idOfParam = (c: Context) => {
+  const id = Number(c.req.param('id'));
+  return Number.isInteger(id) && id > 0 ? id : 0;
+};
 
 const text = (max: number) => z.string().trim().max(max);
 const category = z.enum(CATEGORIES);
@@ -91,6 +98,8 @@ export function createApp(db: Db, opts: { secureCookies?: boolean; bus?: Bus; ra
   const emit = (workspaceId: number, e: LiveEvent) => bus.publish(workspaceId, e);
   /** Emails are sent after the response, so a slow mail server never slows the app down. */
   const later = (job: Promise<unknown>) => void job.catch((e) => console.error(e));
+  /** Things that happen after a ticket is created: linking the device, running automation rules. */
+  const hooks: ModuleContext['hooks'] = { ticketCreated: [] };
 
   app.use('*', secureHeaders({ crossOriginEmbedderPolicy: false }));
   // Up to five 5 MB files per request, sent as base64.
@@ -131,6 +140,7 @@ export function createApp(db: Db, opts: { secureCookies?: boolean; bus?: Bus; ra
     const id = rows[0].id;
     await addMessage(db, id, null, 'event', `Ticket created${d.channel === 'email' ? ' from an email' : ''} · sorted as ${cat}, ${SLA[prio].label.toLowerCase()} priority`);
     if (files.length) await saveAttachments(db, id, null, files, requesterId, false);
+    for (const h of hooks.ticketCreated) await h(workspaceId, id).catch((e) => console.error('ticket hook failed', e));
     const t = (await getTicket(db, workspaceId, id))!;
     emit(workspaceId, { type: 'ticket', ticketId: id, requesterId, actorId: actor?.id });
     later(notify.created(workspaceId, t, appUrl(c)));
@@ -213,8 +223,14 @@ export function createApp(db: Db, opts: { secureCookies?: boolean; bus?: Bus; ra
       `SELECT ${USER_SELECT}, u.password_hash FROM users u JOIN workspaces w ON w.id = u.workspace_id WHERE u.email = $1 AND NOT w.demo`,
       [p.data.email],
     );
-    if (!rows[0] || !(await verifyPassword(p.data.password, rows[0].password_hash))) return c.json({ error: 'Email or password is wrong' }, 401);
+    if (!rows[0] || !(await verifyPassword(p.data.password, rows[0].password_hash))) {
+      if (rows[0]) await audit(c, rows[0].workspace_id, rows[0].id, 'sign_in.failed', '', 'wrong password');
+      return c.json({ error: 'Email or password is wrong' }, 401);
+    }
+    // With two-factor on, the password alone isn't enough: hand back a 5-minute challenge for the code.
+    if (rows[0].totp_enabled) return c.json({ twoFactor: true, challenge: await createChallenge(db, rows[0].id) });
     await startSession(c, rows[0].id);
+    await audit(c, rows[0].workspace_id, rows[0].id, 'sign_in', '', 'with a password');
     return c.json({ user: toUser(rows[0]) });
   });
 
@@ -255,8 +271,12 @@ export function createApp(db: Db, opts: { secureCookies?: boolean; bus?: Bus; ra
     // Every old session ends: if someone else was signed in as you, they're out now.
     await db.query('DELETE FROM sessions WHERE user_id = $1', [userId]);
     await db.query('DELETE FROM password_resets WHERE user_id = $1', [userId]);
+    const resetUser = (await userById(db, userId))!;
+    await audit(c, resetUser.workspaceId, userId, 'security.password_reset', '', 'all other sessions ended');
+    // A reset link proves you own the email, not the phone: two-factor still applies.
+    if (resetUser.twoFactor) return c.json({ twoFactor: true, challenge: await createChallenge(db, userId) });
     await startSession(c, userId);
-    return c.json({ user: await userById(db, userId) });
+    return c.json({ user: resetUser });
   });
 
   /** A throwaway workspace full of realistic tickets. You can switch between the agent and an employee. */
@@ -347,13 +367,6 @@ export function createApp(db: Db, opts: { secureCookies?: boolean; bus?: Bus; ra
     return c.json({ ticketId: t.id, action: 'created' }, 201);
   });
 
-  // Everything below needs a signed-in user.
-  app.use('/api/*', async (c, next) => {
-    const user = await userForToken(db, getCookie(c, SESSION_COOKIE));
-    if (!user) return c.json({ error: 'Please sign in' }, 401);
-    c.set('user', user);
-    await next();
-  });
   const agentOnly = async (c: Context<Env>, next: () => Promise<void>) => {
     if (!isAgent(c.get('user'))) return c.json({ error: 'Only IT staff can do that' }, 403);
     await next();
@@ -362,6 +375,27 @@ export function createApp(db: Db, opts: { secureCookies?: boolean; bus?: Bus; ra
     if (c.get('user').role !== 'admin') return c.json({ error: 'Only admins can do that' }, 403);
     await next();
   };
+  /** Records who did what. Admins read it on the Audit log page. */
+  const audit = async (c: Context, workspaceId: number, actorId: number | null, action: string, target = '', detail = '') => {
+    await db.query('INSERT INTO audit_log (workspace_id, actor_id, action, target, detail, ip) VALUES ($1, $2, $3, $4, $5, $6)', [
+      workspaceId, actorId, action, target.slice(0, 200), detail.slice(0, 2000), clientKey(c).slice(0, 64),
+    ]).catch((e) => console.error('audit failed', e));
+  };
+  const ctx: ModuleContext = {
+    db, bus, mailer, notify, emit, later, audit, appUrl, body, firstError, idOf: (c) => idOfParam(c), isAgent, agentOnly, adminOnly,
+    startSession, createTicket, resumeSets, hooks, rateLimit: (max, ms) => (limits ? rateLimiter(max, ms) : () => true), clientKey,
+  };
+  // Routes that work without a session (links from emails, single sign-on callbacks).
+  for (const m of MODULES) m.public?.(app, ctx);
+
+  // Everything below needs a signed-in user.
+  app.use('/api/*', async (c, next) => {
+    const user = await userForToken(db, getCookie(c, SESSION_COOKIE));
+    if (!user) return c.json({ error: 'Please sign in' }, 401);
+    c.set('user', user);
+    await next();
+  });
+  for (const m of MODULES) m.private(app, ctx);
 
   /** In a demo, hop between the IT agent and Maya the employee to watch live updates both ways. */
   app.post('/api/demo/switch', async (c) => {
@@ -638,6 +672,7 @@ export function createApp(db: Db, opts: { secureCookies?: boolean; bus?: Bus; ra
     }
     emit(user.workspaceId, { type: 'ticket', ticketId: t.id, requesterId: t.requester.id, actorId: user.id });
     if (p.data.notify) later(notify.solved(user.workspaceId, t, p.data.resolution, appUrl(c)));
+    await audit(c, user.workspaceId, user.id, 'ticket.resolved', t.key);
     return c.json({ ticket: await getTicket(db, user.workspaceId, t.id), articleId });
   });
 
@@ -787,15 +822,17 @@ export function createApp(db: Db, opts: { secureCookies?: boolean; bus?: Bus; ra
     const p = z.object({ role: z.enum(['requester', 'agent', 'admin']) }).safeParse(await body(c));
     if (!p.success) return c.json(firstError(p.error), 400);
     if (idOf(c) === user.id) return c.json({ error: 'You can’t change your own role' }, 400);
-    const { rows } = await db.query('UPDATE users SET role = $3 WHERE workspace_id = $1 AND id = $2 RETURNING id', [user.workspaceId, idOf(c), p.data.role]);
-    return rows[0] ? c.json({ ok: true }) : c.json({ error: 'Not found' }, 404);
+    const { rows } = await db.query<{ name: string }>('UPDATE users SET role = $3 WHERE workspace_id = $1 AND id = $2 RETURNING name', [user.workspaceId, idOf(c), p.data.role]);
+    if (!rows[0]) return c.json({ error: 'Not found' }, 404);
+    await audit(c, user.workspaceId, user.id, 'person.role_changed', rows[0].name, p.data.role);
+    return c.json({ ok: true });
   });
 
   app.get('/api/settings', agentOnly, async (c) => {
     const user = c.get('user');
-    let { rows } = await db.query<{ name: string; join_code: string; demo: boolean; inbound_token: string | null }>('SELECT name, join_code, demo, inbound_token FROM workspaces WHERE id = $1', [user.workspaceId]);
+    let { rows } = await db.query<{ name: string; join_code: string; demo: boolean; inbound_token: string | null; sso_domain: string | null }>('SELECT name, join_code, demo, inbound_token, sso_domain FROM workspaces WHERE id = $1', [user.workspaceId]);
     if (!rows[0].inbound_token) {
-      ({ rows } = await db.query('UPDATE workspaces SET inbound_token = $2 WHERE id = $1 RETURNING name, join_code, demo, inbound_token', [user.workspaceId, randomBytes(18).toString('base64url')]));
+      ({ rows } = await db.query('UPDATE workspaces SET inbound_token = $2 WHERE id = $1 RETURNING name, join_code, demo, inbound_token, sso_domain', [user.workspaceId, randomBytes(18).toString('base64url')]));
     }
     const w = rows[0];
     return c.json({
@@ -804,6 +841,7 @@ export function createApp(db: Db, opts: { secureCookies?: boolean; bus?: Bus; ra
       inboundAddress: user.role === 'admin' || w.demo ? `${appUrl(c)}/api/inbound/${w.inbound_token}` : null,
       hours: user.hours,
       emailDelivery: w.demo ? 'log' : mailer.delivery,
+      ssoDomain: w.sso_domain ?? '',
     });
   });
 
@@ -817,9 +855,15 @@ export function createApp(db: Db, opts: { secureCookies?: boolean; bus?: Bus; ra
 
   app.put('/api/settings', agentOnly, adminOnly, async (c) => {
     const user = c.get('user');
-    const p = z.object({ name: text(80).min(2).optional(), hours: hoursSchema.optional() }).strict().safeParse(await body(c));
+    const p = z.object({ name: text(80).min(2).optional(), hours: hoursSchema.optional(), ssoDomain: z.string().trim().toLowerCase().max(100).regex(/^$|^[a-z0-9.-]+\.[a-z]{2,}$/, 'Use a domain like example.com').optional() }).strict().safeParse(await body(c));
     if (!p.success) return c.json(firstError(p.error), 400);
     if (p.data.name) await db.query('UPDATE workspaces SET name = $2 WHERE id = $1', [user.workspaceId, p.data.name]);
+    if (p.data.ssoDomain !== undefined) {
+      const taken = p.data.ssoDomain && (await db.query('SELECT 1 FROM workspaces WHERE sso_domain = $1 AND id <> $2', [p.data.ssoDomain, user.workspaceId])).rows.length;
+      if (taken) return c.json({ error: 'Another desk already uses that domain', field: 'ssoDomain' }, 409);
+      await db.query('UPDATE workspaces SET sso_domain = $2 WHERE id = $1', [user.workspaceId, p.data.ssoDomain || null]);
+    }
+    await audit(c, user.workspaceId, user.id, 'settings.updated', '', Object.keys(p.data).join(', '));
     if (p.data.hours) {
       const h = p.data.hours;
       await db.query('UPDATE workspaces SET time_zone = $2, work_days = $3, day_start = $4, day_end = $5, urgent_24x7 = $6 WHERE id = $1', [

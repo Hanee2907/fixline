@@ -5,6 +5,7 @@ import { ApiError, api, type TicketDetail } from '../api';
 import { Avatar, Dialog, Icon, celebrate, clockTime, useNow, useToast } from '../ui';
 import { AttachButton, Attachments, PendingFiles, useUploads } from '../files';
 import { opensLabel } from '../../../shared/hours';
+import { RequestCard, TicketSide } from './TicketExtras';
 
 let peopleCache: Promise<(Person & { open: number })[]> | null = null;
 let macroCache: Promise<Macro[]> | null = null;
@@ -131,6 +132,7 @@ export function TicketPane({ id, user, rev, incidents, onChanged, onBack }: {
               <div className="tgt">P{t.priority} target<b>{formatMinutes((s.clock === 'respond' ? SLA[t.priority].respond : SLA[t.priority].resolve) / 60000)}</b></div>
             </div>
             {linked && <div className="sys" style={{ paddingLeft: 0 }}><span className="dot live" /> Part of incident <b>{linked.title}</b></div>}
+            <RequestCard t={t} />
             <div className="ev"><Avatar person={t.requester} /><div className="card"><small>{t.requester.name} · {clockTime(t.createdAt)} · via {t.channel}</small>{t.description || t.subject}<Attachments items={d.attachments} /></div></div>
             {d.messages.map((m) => {
               if (m.kind === 'event') return <div key={m.id} className="sys">{m.body} · {clockTime(m.createdAt)}</div>;
@@ -219,6 +221,7 @@ export function TicketPane({ id, user, rev, incidents, onChanged, onBack }: {
               <span>Opened</span><span className="val" style={{ fontWeight: 500 }}>{new Date(t.createdAt).toLocaleString([], { weekday: 'short', hour: 'numeric', minute: '2-digit' })}</span>
             </div>
           </div>
+          <TicketSide t={t} onChanged={() => { load(); onChanged(); }} onDraft={(text) => { setNote(false); setDraft(text); setTimeout(() => box.current?.focus(), 0); }} />
           {d.suggestions.length > 0 && (
             <div className="kb">
               <h5>Suggested fixes</h5>

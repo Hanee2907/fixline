@@ -160,6 +160,139 @@ const MIGRATIONS: { id: string; sql: string }[] = [
       );
     `,
   },
+  {
+    id: '003_itsm',
+    sql: `
+      -- People: who approves whose requests, two-factor sign-in, single sign-on.
+      ALTER TABLE users ADD COLUMN manager_id INT REFERENCES users(id) ON DELETE SET NULL;
+      ALTER TABLE users ADD COLUMN totp_secret TEXT;
+      ALTER TABLE users ADD COLUMN totp_enabled BOOLEAN NOT NULL DEFAULT FALSE;
+      ALTER TABLE users ADD COLUMN recovery_codes TEXT NOT NULL DEFAULT '';
+      ALTER TABLE users ADD COLUMN sso_subject TEXT;
+      ALTER TABLE workspaces ADD COLUMN sso_domain TEXT;
+
+      CREATE TABLE login_challenges (
+        token_hash TEXT PRIMARY KEY,
+        user_id    INT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        expires_at TIMESTAMPTZ NOT NULL,
+        attempts   INT NOT NULL DEFAULT 0
+      );
+
+      -- Requests people can make, e.g. "New software", "Access to a shared drive".
+      CREATE TABLE catalog_items (
+        id             SERIAL PRIMARY KEY,
+        workspace_id   INT  NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+        name           TEXT NOT NULL,
+        description    TEXT NOT NULL DEFAULT '',
+        icon           TEXT NOT NULL DEFAULT '📦',
+        category       TEXT NOT NULL DEFAULT 'Other',
+        keywords       TEXT NOT NULL DEFAULT '',
+        fields         TEXT NOT NULL DEFAULT '[]',
+        needs_approval BOOLEAN NOT NULL DEFAULT TRUE,
+        priority       INT  NOT NULL DEFAULT 4,
+        active         BOOLEAN NOT NULL DEFAULT TRUE
+      );
+
+      ALTER TABLE tickets ADD COLUMN kind TEXT NOT NULL DEFAULT 'incident';
+      ALTER TABLE tickets ADD COLUMN catalog_item_id INT REFERENCES catalog_items(id) ON DELETE SET NULL;
+      ALTER TABLE tickets ADD COLUMN form TEXT NOT NULL DEFAULT '{}';
+      ALTER TABLE tickets ADD COLUMN approval TEXT;
+      ALTER TABLE tickets ADD COLUMN approver_id INT REFERENCES users(id) ON DELETE SET NULL;
+      ALTER TABLE tickets ADD COLUMN approved_at TIMESTAMPTZ;
+
+      CREATE TABLE approval_links (
+        token_hash TEXT PRIMARY KEY,
+        ticket_id  INT NOT NULL REFERENCES tickets(id) ON DELETE CASCADE,
+        user_id    INT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        expires_at TIMESTAMPTZ NOT NULL
+      );
+
+      -- Devices and licences.
+      CREATE TABLE assets (
+        id             SERIAL PRIMARY KEY,
+        workspace_id   INT  NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+        tag            TEXT NOT NULL,
+        name           TEXT NOT NULL,
+        type           TEXT NOT NULL DEFAULT 'laptop',
+        model          TEXT NOT NULL DEFAULT '',
+        serial         TEXT NOT NULL DEFAULT '',
+        status         TEXT NOT NULL DEFAULT 'in_use' CHECK (status IN ('in_use','in_stock','repair','retired')),
+        assigned_to    INT  REFERENCES users(id) ON DELETE SET NULL,
+        location       TEXT NOT NULL DEFAULT '',
+        purchased_on   DATE,
+        warranty_until DATE,
+        notes          TEXT NOT NULL DEFAULT '',
+        created_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
+        UNIQUE (workspace_id, tag)
+      );
+      ALTER TABLE tickets ADD COLUMN asset_id INT REFERENCES assets(id) ON DELETE SET NULL;
+
+      -- Root causes behind repeated incidents.
+      CREATE TABLE problems (
+        id           SERIAL PRIMARY KEY,
+        workspace_id INT  NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+        number       INT  NOT NULL,
+        title        TEXT NOT NULL,
+        description  TEXT NOT NULL DEFAULT '',
+        status       TEXT NOT NULL DEFAULT 'investigating' CHECK (status IN ('investigating','known_error','resolved')),
+        root_cause   TEXT NOT NULL DEFAULT '',
+        workaround   TEXT NOT NULL DEFAULT '',
+        assignee_id  INT  REFERENCES users(id) ON DELETE SET NULL,
+        created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+        resolved_at  TIMESTAMPTZ
+      );
+      ALTER TABLE tickets ADD COLUMN problem_id INT REFERENCES problems(id) ON DELETE SET NULL;
+
+      -- Planned changes, with approval and a calendar.
+      CREATE TABLE changes (
+        id             SERIAL PRIMARY KEY,
+        workspace_id   INT  NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+        number         INT  NOT NULL,
+        title          TEXT NOT NULL,
+        description    TEXT NOT NULL DEFAULT '',
+        plan           TEXT NOT NULL DEFAULT '',
+        rollback       TEXT NOT NULL DEFAULT '',
+        affects        TEXT NOT NULL DEFAULT '',
+        status         TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','approved','rejected','done','failed','cancelled')),
+        planned_start  TIMESTAMPTZ NOT NULL,
+        planned_end    TIMESTAMPTZ NOT NULL,
+        risk_score     INT  NOT NULL DEFAULT 0,
+        risk_reasons   TEXT NOT NULL DEFAULT '[]',
+        requested_by   INT  REFERENCES users(id) ON DELETE SET NULL,
+        approved_by    INT  REFERENCES users(id) ON DELETE SET NULL,
+        outcome        TEXT NOT NULL DEFAULT '',
+        problem_id     INT  REFERENCES problems(id) ON DELETE SET NULL,
+        created_at     TIMESTAMPTZ NOT NULL DEFAULT now()
+      );
+      CREATE INDEX changes_calendar ON changes(workspace_id, planned_start);
+
+      -- "When … then …" rules.
+      CREATE TABLE rules (
+        id           SERIAL PRIMARY KEY,
+        workspace_id INT  NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+        name         TEXT NOT NULL,
+        enabled      BOOLEAN NOT NULL DEFAULT TRUE,
+        conditions   TEXT NOT NULL DEFAULT '[]',
+        actions      TEXT NOT NULL DEFAULT '[]',
+        runs         INT  NOT NULL DEFAULT 0,
+        last_run_at  TIMESTAMPTZ,
+        created_at   TIMESTAMPTZ NOT NULL DEFAULT now()
+      );
+
+      -- Who did what, when.
+      CREATE TABLE audit_log (
+        id           BIGSERIAL PRIMARY KEY,
+        workspace_id INT  NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+        actor_id     INT  REFERENCES users(id) ON DELETE SET NULL,
+        action       TEXT NOT NULL,
+        target       TEXT NOT NULL DEFAULT '',
+        detail       TEXT NOT NULL DEFAULT '',
+        ip           TEXT NOT NULL DEFAULT '',
+        created_at   TIMESTAMPTZ NOT NULL DEFAULT now()
+      );
+      CREATE INDEX audit_workspace ON audit_log(workspace_id, created_at DESC);
+    `,
+  },
 ];
 
 export async function migrate(db: Db) {

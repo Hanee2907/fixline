@@ -19,6 +19,8 @@ export interface User {
   workspaceName: string;
   demo: boolean;
   hours: import('./hours.js').Hours;
+  twoFactor: boolean;
+  isManager: boolean;
 }
 
 export interface Person {
@@ -55,6 +57,14 @@ export interface Ticket {
   resolution: string;
   rating: 'good' | 'bad' | null;
   incidentId: number | null;
+  kind: 'incident' | 'request';
+  catalogItemId: number | null;
+  /** answers to a request form, label -> value */
+  form: Record<string, string>;
+  approval: 'pending' | 'approved' | 'rejected' | null;
+  approver: Person | null;
+  assetId: number | null;
+  problemId: number | null;
 }
 
 export interface Attachment {
@@ -101,6 +111,7 @@ export interface WorkspaceSettings {
   inboundAddress: string | null;
   hours: import('./hours.js').Hours;
   emailDelivery: 'smtp' | 'log';
+  ssoDomain: string;
 }
 
 export interface Article {
@@ -164,8 +175,124 @@ export interface Reports {
 
 /** What travels over the live stream. Only ids, never ticket contents. */
 export interface LiveEvent {
-  type: 'ticket' | 'message' | 'incident' | 'presence' | 'article';
+  type: 'ticket' | 'message' | 'incident' | 'presence' | 'article' | 'approval' | 'asset' | 'problem' | 'change';
   ticketId?: number;
   requesterId?: number;
+  /** the manager asked to approve a request also hears about it */
+  approverId?: number;
   actorId?: number;
+}
+
+export interface FormField {
+  key: string;
+  label: string;
+  type: 'text' | 'textarea' | 'select' | 'date';
+  options?: string[];
+  required?: boolean;
+}
+
+export interface CatalogItem {
+  id: number;
+  name: string;
+  description: string;
+  icon: string;
+  category: Category;
+  keywords: string;
+  fields: FormField[];
+  needsApproval: boolean;
+  priority: Priority;
+  active: boolean;
+}
+
+export type AssetStatus = 'in_use' | 'in_stock' | 'repair' | 'retired';
+export interface Asset {
+  id: number;
+  tag: string;
+  name: string;
+  type: string;
+  model: string;
+  serial: string;
+  status: AssetStatus;
+  assignedTo: Person | null;
+  location: string;
+  purchasedOn: string | null;
+  warrantyUntil: string | null;
+  notes: string;
+  ticketsLast30: number;
+  openTickets: number;
+  /** plain-language warnings, e.g. "4 tickets in 30 days" or "Warranty ends in 12 days" */
+  health: string[];
+}
+
+export interface Problem {
+  id: number;
+  key: string;
+  title: string;
+  description: string;
+  status: 'investigating' | 'known_error' | 'resolved';
+  rootCause: string;
+  workaround: string;
+  assignee: Person | null;
+  linked: number;
+  openLinked: number;
+  createdAt: string;
+  resolvedAt: string | null;
+}
+
+/** Tickets that look like the same underlying problem, found automatically. */
+export interface ProblemCandidate {
+  label: string;
+  ticketIds: number[];
+  keys: string[];
+  since: string;
+  category: Category;
+}
+
+export interface RiskReason { points: number; text: string }
+export interface Change {
+  id: number;
+  key: string;
+  title: string;
+  description: string;
+  plan: string;
+  rollback: string;
+  affects: string;
+  status: 'pending' | 'approved' | 'rejected' | 'done' | 'failed' | 'cancelled';
+  plannedStart: string;
+  plannedEnd: string;
+  risk: { score: number; level: 'low' | 'medium' | 'high'; reasons: RiskReason[] };
+  requestedBy: Person | null;
+  approvedBy: Person | null;
+  outcome: string;
+  problemId: number | null;
+  clashes: { id: number; key: string; title: string }[];
+}
+
+export type RuleField = 'category' | 'priority' | 'text' | 'channel' | 'kind' | 'department';
+export interface RuleCondition { field: RuleField; op: 'is' | 'is_not' | 'contains'; value: string }
+export type RuleAction =
+  | { type: 'assign'; userId: number }
+  | { type: 'priority'; value: Priority }
+  | { type: 'category'; value: Category }
+  | { type: 'note'; text: string }
+  | { type: 'alert_agents' }
+  | { type: 'link_problem'; problemId: number };
+export interface Rule {
+  id: number;
+  name: string;
+  enabled: boolean;
+  conditions: RuleCondition[];
+  actions: RuleAction[];
+  runs: number;
+  lastRunAt: string | null;
+}
+
+export interface AuditEntry {
+  id: number;
+  actor: string | null;
+  action: string;
+  target: string;
+  detail: string;
+  ip: string;
+  createdAt: string;
 }

@@ -131,7 +131,7 @@ export function ReportsPage() {
 
 /* ---------- People ---------- */
 export function PeoplePage({ user }: { user: User }) {
-  const [people, setPeople] = useState<(Person & { open: number })[]>([]);
+  const [people, setPeople] = useState<(Person & { open: number; managerId: number | null })[]>([]);
   const [code, setCode] = useState<string | null>(null);
   const toast = useToast();
   const load = () => api.people().then((r) => setPeople(r.people)).catch(() => {});
@@ -151,7 +151,7 @@ export function PeoplePage({ user }: { user: User }) {
       )}
       <div className="panel">
         <table className="t">
-          <thead><tr><th>Name</th><th>Team</th><th>Email</th><th>Role</th><th>Open tickets</th></tr></thead>
+          <thead><tr><th>Name</th><th>Team</th><th>Email</th><th>Role</th><th title="Approves their requests">Manager</th><th>Open tickets</th></tr></thead>
           <tbody>
             {people.map((p) => (
               <tr key={p.id}>
@@ -164,6 +164,14 @@ export function PeoplePage({ user }: { user: User }) {
                         <option value="requester">Employee</option><option value="agent">IT agent</option><option value="admin">Admin</option>
                       </select>
                     : { requester: 'Employee', agent: 'IT agent', admin: 'Admin' }[p.role]}
+                </td>
+                <td>
+                  {user.role === 'admin'
+                    ? <select aria-label={`Manager for ${p.name}`} value={p.managerId ?? ''} onChange={async (e) => { try { await api.setManager(p.id, e.target.value ? Number(e.target.value) : null); toast('Manager updated. They approve this person’s requests now.'); load(); } catch (err) { toast(err instanceof ApiError ? err.message : 'Could not change'); } }}>
+                        <option value="">An admin</option>
+                        {people.filter((m) => m.id !== p.id).map((m) => <option key={m.id} value={m.id}>{m.name}</option>)}
+                      </select>
+                    : people.find((m) => m.id === p.managerId)?.name ?? '—'}
                 </td>
                 <td>{p.role === 'requester' ? '—' : p.open}</td>
               </tr>

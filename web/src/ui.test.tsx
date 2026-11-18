@@ -12,7 +12,8 @@ const ticket = (over: Partial<Ticket>): Ticket => ({
   requester: { id: 1, name: 'Maya Rodriguez', email: '', role: 'requester', department: '' }, assignee: null, device: '', location: '', channel: 'portal',
   createdAt: new Date(created).toISOString(), updatedAt: new Date(created).toISOString(), firstResponseAt: null,
   responseDueAt: new Date(created + 30 * MIN).toISOString(), dueAt: new Date(created + 240 * MIN).toISOString(),
-  pausedAt: null, pausedRemaining: null, solvedAt: null, resolution: '', rating: null, incidentId: null, ...over,
+  pausedAt: null, pausedRemaining: null, solvedAt: null, resolution: '', rating: null, incidentId: null,
+  kind: 'incident', catalogItemId: null, form: {}, approval: null, approver: null, assetId: null, problemId: null, ...over,
 });
 
 describe('people', () => {

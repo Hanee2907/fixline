@@ -1,16 +1,20 @@
 import { useCallback, useEffect, useState, type FormEvent } from 'react';
 import { SLA } from '../../../shared/sla';
-import type { Article, Attachment, Category, Incident, Message, Priority, Suggestion, Ticket, User } from '../../../shared/types';
+import type { Article, Attachment, CatalogItem, Category, Incident, Message, Priority, Suggestion, Ticket, User } from '../../../shared/types';
 import { ApiError, api, connectLive } from '../api';
 import { Avatar, Icon, Mark, ago, celebrate, clockTime, useTheme, useToast } from '../ui';
 import { AttachButton, Attachments, PendingFiles, useUploads } from '../files';
+import { Approvals, AskAssistant, MaintenanceBanner, MyDevices, RequestForm } from './Extras';
 
-type Route = { page: 'home' } | { page: 'ticket'; id: number } | { page: 'guide'; id: number } | { page: 'tickets' };
+type Route = { page: 'home'; device?: string } | { page: 'ticket'; id: number } | { page: 'guide'; id: number } | { page: 'tickets' } | { page: 'approvals' } | { page: 'devices' };
 const parse = (hash: string): Route => {
   const [a, b] = hash.replace(/^#\/?/, '').split('/');
   if (a === 't' && Number(b)) return { page: 'ticket', id: Number(b) };
   if (a === 'g' && Number(b)) return { page: 'guide', id: Number(b) };
   if (a === 'tickets') return { page: 'tickets' };
+  if (a === 'approvals') return { page: 'approvals' };
+  if (a === 'devices') return { page: 'devices' };
+  if (a === 'new' && b) return { page: 'home', device: decodeURIComponent(b) };
   return { page: 'home' };
 };
 
@@ -27,6 +31,7 @@ export function Portal({ user, onUser }: { user: User; onUser: (u: User | null) 
   const [tickets, setTickets] = useState<Ticket[]>([]);
   const [incidents, setIncidents] = useState<Incident[]>([]);
   const [rev, setRev] = useState(0);
+  const [toApprove, setToApprove] = useState(0);
   const [theme, toggleTheme] = useTheme();
 
   useEffect(() => {
@@ -35,9 +40,10 @@ export function Portal({ user, onUser }: { user: User; onUser: (u: User | null) 
     return () => removeEventListener('hashchange', on);
   }, []);
   const load = useCallback(async () => {
-    const [t, i] = await Promise.all([api.tickets(), api.incidents()]);
+    const [t, i, a] = await Promise.all([api.tickets(), api.incidents(), api.approvals()]);
     setTickets(t.tickets);
     setIncidents(i.incidents);
+    setToApprove(a.tickets.length);
   }, []);
   useEffect(() => { load().catch(() => {}); }, [load]);
   // Live: when IT replies or fixes something, it shows up straight away.
@@ -54,6 +60,8 @@ export function Portal({ user, onUser }: { user: User; onUser: (u: User | null) 
         <nav aria-label="Main">
           <a href="#/" className={route.page === 'home' ? 'on' : ''}>Get help</a>
           <a href="#/tickets" className={route.page === 'tickets' || route.page === 'ticket' ? 'on' : ''}>My tickets{open.length ? ` · ${open.length}` : ''}</a>
+          {(user.isManager || toApprove > 0) && <a href="#/approvals" className={route.page === 'approvals' ? 'on' : ''}>Approvals{toApprove ? <em className="nb">{toApprove}</em> : ''}</a>}
+          <a href="#/devices" className={route.page === 'devices' ? 'on' : ''}>My devices</a>
         </nav>
         <div className="right">
           {user.demo && <button className="b" onClick={switchDemo} title="See what IT sees"><Icon name="swap" size={13} /> Switch to IT view</button>}
@@ -69,7 +77,10 @@ export function Portal({ user, onUser }: { user: User; onUser: (u: User | null) 
             <div><b>Known issue: {i.title}</b><p>{i.message} · started {ago(i.createdAt)}</p></div>
           </div>
         ))}
-        {route.page === 'home' && <Home user={user} tickets={tickets} onCreated={(t) => { load(); location.hash = `#/t/${t.id}`; }} />}
+        <MaintenanceBanner />
+        {route.page === 'home' && <Home key={route.device ?? ''} user={user} device={route.device} tickets={tickets} onCreated={(t) => { load(); location.hash = `#/t/${t.id}`; }} />}
+        {route.page === 'approvals' && <Approvals onChanged={load} />}
+        {route.page === 'devices' && <MyDevices />}
         {route.page === 'tickets' && <TicketList tickets={tickets} />}
         {route.page === 'ticket' && <TicketView id={route.id} rev={rev} onChanged={load} />}
         {route.page === 'guide' && <Guide id={route.id} />}
@@ -78,8 +89,16 @@ export function Portal({ user, onUser }: { user: User; onUser: (u: User | null) 
   );
 }
 
-function Home({ user, tickets, onCreated }: { user: User; tickets: Ticket[]; onCreated: (t: Ticket) => void }) {
-  const [subject, setSubject] = useState('');
+function Home({ user, device, tickets, onCreated }: { user: User; device?: string; tickets: Ticket[]; onCreated: (t: Ticket) => void }) {
+  const [subject, setSubject] = useState(device ? `Problem with ${device}: ` : '');
+  const [matches, setMatches] = useState<{ item: CatalogItem; prefill: Record<string, string> }[]>([]);
+  const [picked, setPicked] = useState<{ item: CatalogItem; prefill: Record<string, string>; note: string } | null>(null);
+  const [catalog, setCatalog] = useState<CatalogItem[]>([]);
+  const [aiOn, setAiOn] = useState(false);
+  useEffect(() => {
+    api.catalog().then((r) => setCatalog(r.items)).catch(() => {});
+    api.aiStatus().then((r) => setAiOn(r.enabled)).catch(() => {});
+  }, []);
   const [details, setDetails] = useState('');
   const [fixes, setFixes] = useState<Suggestion[]>([]);
   const [guess, setGuess] = useState<{ category: Category; priority: Priority } | null>(null);
@@ -91,13 +110,17 @@ function Home({ user, tickets, onCreated }: { user: User; tickets: Ticket[]; onC
   // As they type: guides that might fix it, and how the ticket would be sorted.
   useEffect(() => {
     const text = `${subject} ${details}`.trim();
-    if (text.length < 4) { setFixes([]); setGuess(null); return; }
-    const t = setTimeout(() => api.suggest(text).then((r) => { setFixes(r.suggestions); setGuess({ category: r.category, priority: r.priority }); }).catch(() => {}), 220);
+    if (text.length < 4) { setFixes([]); setGuess(null); setMatches([]); return; }
+    const t = setTimeout(() => {
+      api.suggest(text).then((r) => { setFixes(r.suggestions); setGuess({ category: r.category, priority: r.priority }); }).catch(() => {});
+      // "I need Acrobat" is a request, not a fault: offer the right form, already filled in.
+      api.matchCatalog(text).then((r) => setMatches(r.matches)).catch(() => {});
+    }, 220);
     return () => clearTimeout(t);
   }, [subject, details]);
 
-  const submit = async (e: FormEvent) => {
-    e.preventDefault();
+  const submit = async (e?: FormEvent) => {
+    e?.preventDefault();
     setBusy(true);
     setError('');
     try {
@@ -114,7 +137,8 @@ function Home({ user, tickets, onCreated }: { user: User; tickets: Ticket[]; onC
     <>
       <section className="hero">
         <h1>Hi {user.name.split(' ')[0]}, <em>what’s going wrong?</em></h1>
-        <p>Describe it in your own words. You’ll see fixes as you type, and if none work, IT gets it straight away.</p>
+        <p>Describe it in your own words, or say what you need. You’ll see fixes as you type, and if none work, IT gets it straight away.</p>
+        {picked ? <RequestForm item={picked.item} prefill={picked.prefill} note={picked.note} onClose={() => setPicked(null)} onCreated={onCreated} /> : <>
         <form className={`ask${files.over ? ' dropping' : ''}`} onSubmit={submit} {...files.dropProps}>
           <label className="sr-only" htmlFor="ask-s">Describe the problem</label>
           <input id="ask-s" autoFocus value={subject} onChange={(e) => setSubject(e.target.value)} onPaste={files.onPaste} placeholder="e.g. Outlook keeps asking for my password" maxLength={140} />
@@ -129,6 +153,18 @@ function Home({ user, tickets, onCreated }: { user: User; tickets: Ticket[]; onC
           </div>
         </form>
         {error && <p className="err" role="alert">{error}</p>}
+        {matches.length > 0 && (
+          <div className="fixes" aria-label="Requests that match">
+            <div style={{ fontSize: 13, color: 'var(--mu)' }}>📋 Sounds like you need something. Use the form and skip the back-and-forth:</div>
+            {matches.map((m) => (
+              <button key={m.item.id} type="button" className="fix req" onClick={() => setPicked({ ...m, note: details })}>
+                <span className="emoji">{m.item.icon}</span>
+                <span><b>{m.item.name}</b><small>{m.item.description}{Object.keys(m.prefill).length ? ' · already filled in from what you typed' : ''}</small></span>
+                <em>{m.item.needsApproval ? 'manager approves' : 'no approval'} →</em>
+              </button>
+            ))}
+          </div>
+        )}
         {fixes.length > 0 && (
           <div className="fixes" aria-label="Guides that might fix this">
             <div style={{ fontSize: 13, color: 'var(--mu)' }}>✨ These fixed the same problem for others:</div>
@@ -137,7 +173,23 @@ function Home({ user, tickets, onCreated }: { user: User; tickets: Ticket[]; onC
             ))}
           </div>
         )}
+        {aiOn && `${subject} ${details}`.trim().length >= 10 && !matches.length && (
+          <div className="fixes"><AskAssistant question={`${subject}\n${details}`.trim()} onTicket={() => submit()} /></div>
+        )}
+        </>}
       </section>
+      {!picked && catalog.length > 0 && (
+        <section className="sect">
+          <h2>Or ask IT for something</h2>
+          <div className="cat-grid">
+            {catalog.map((c) => (
+              <button key={c.id} className="cat" onClick={() => { setPicked({ item: c, prefill: {}, note: '' }); scrollTo({ top: 0, behavior: 'smooth' }); }}>
+                <span className="emoji">{c.icon}</span><b>{c.name}</b><small>{c.description}</small>
+              </button>
+            ))}
+          </div>
+        </section>
+      )}
       {recent.length > 0 && (
         <section className="sect">
           <h2>Your recent tickets</h2>
@@ -173,16 +225,23 @@ function TicketView({ id, rev, onChanged }: { id: number; rev: number; onChanged
   useEffect(() => { load(); }, [load, rev]);
   if (!d) return <div className="empty">Loading…</div>;
   const t = d.ticket;
-  const step = t.rating ? 4 : STAGE[t.status].step;
+  const approvalFlow = t.approval != null;
+  const steps = approvalFlow ? ['Asked', t.approval === 'rejected' ? 'Declined' : 'Approved', 'In progress', 'Done'] : ['Received', 'In progress', 'Fixed', 'Rated'];
+  const step = approvalFlow
+    ? (t.approval === 'pending' ? 1 : t.approval === 'rejected' ? 2 : t.status === 'solved' ? 4 : t.status === 'new' ? 2 : 3)
+    : (t.rating ? 4 : STAGE[t.status].step);
   return (
     <section>
       <a href="#/tickets" className="b" style={{ display: 'inline-block', marginBottom: 14 }}>← My tickets</a>
       <h1 style={{ fontSize: 28, fontWeight: 600, letterSpacing: '-.5px' }}>{t.subject}</h1>
       <div style={{ color: 'var(--dim)', marginTop: 4 }}><span className="mono">{t.key}</span> · {t.category} · opened {ago(t.createdAt)}</div>
-      <div className="track" aria-hidden="true">{[1, 2, 3, 4].map((s) => <span key={s} className={s <= step ? 'done' : ''} />)}</div>
-      <div className="track-l"><span className={step >= 1 ? '' : ''}><b>Received</b></span><span>{step >= 2 ? <b>In progress</b> : 'In progress'}</span><span>{step >= 3 ? <b>Fixed</b> : 'Fixed'}</span><span>{step >= 4 ? <b>Rated</b> : 'Rated'}</span></div>
-      <p className="sr-only">Status: {STAGE[t.status].label}</p>
-      {t.status === 'waiting' && <div className="banner" style={{ marginTop: 16, borderColor: 'var(--note-line)', background: 'var(--note-bg)' }}><span>⏸</span><div><b>{t.waitingReason}</b><p>Reply below if IT asked you something. The ticket picks up again as soon as you do.</p></div></div>}
+      <div className={`track${t.approval === 'rejected' ? ' declined' : ''}`} aria-hidden="true">{[1, 2, 3, 4].map((s) => <span key={s} className={s <= step ? 'done' : ''} />)}</div>
+      <div className="track-l">{steps.map((label, i) => <span key={label}>{step >= i + 1 ? <b>{label}</b> : label}</span>)}</div>
+      <p className="sr-only">Status: {t.approval === 'pending' ? 'Waiting for approval' : STAGE[t.status].label}</p>
+      {Object.keys(t.form).length > 0 && <div className="answers" style={{ marginTop: 18 }}>{Object.entries(t.form).filter(([, v]) => v).map(([k, v]) => <div key={k}><small>{k}</small><span>{v}</span></div>)}</div>}
+      {t.approval === 'pending' && <div className="banner" style={{ marginTop: 16, borderColor: 'var(--note-line)', background: 'var(--note-bg)' }}><span>✉</span><div><b>Waiting for {t.approver?.name ?? 'your manager'} to approve</b><p>They got an email with a one-tap approve button. IT starts the moment they say yes, and the clock doesn’t run until then.</p></div></div>}
+      {t.approval === 'rejected' && <div className="banner" style={{ marginTop: 16 }}><span>✕</span><div><b>{t.approver?.name ?? 'Your manager'} declined this</b><p>{t.resolution}</p></div></div>}
+      {t.status === 'waiting' && t.approval !== 'pending' && <div className="banner" style={{ marginTop: 16, borderColor: 'var(--note-line)', background: 'var(--note-bg)' }}><span>⏸</span><div><b>{t.waitingReason}</b><p>Reply below if IT asked you something. The ticket picks up again as soon as you do.</p></div></div>}
 
       <div style={{ display: 'grid', gap: 12, marginTop: 22 }}>
         <div className="ev"><Avatar person={t.requester} /><div className="card"><small>You · {clockTime(t.createdAt)}</small>{t.description || t.subject}<Attachments items={d.attachments} /></div></div>

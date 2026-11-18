@@ -39,11 +39,12 @@ export async function createSession(db: Db, userId: number): Promise<string> {
 export async function endSession(db: Db, token: string) {
   await db.query('DELETE FROM sessions WHERE token_hash = $1', [sha256(token)]);
 }
-export interface UserRow extends HoursRow { id: number; email: string; name: string; role: User['role']; department: string; workspace_id: number; workspace_name: string; demo: boolean }
+export interface UserRow extends HoursRow { id: number; email: string; name: string; role: User['role']; department: string; workspace_id: number; workspace_name: string; demo: boolean; totp_enabled: boolean; is_manager: boolean }
 export interface HoursRow { time_zone: string; work_days: string; day_start: number; day_end: number; urgent_24x7: boolean }
 
 export const USER_SELECT = `u.id, u.email, u.name, u.role, u.department, u.workspace_id, w.name AS workspace_name, w.demo,
-  w.time_zone, w.work_days, w.day_start, w.day_end, w.urgent_24x7`;
+  w.time_zone, w.work_days, w.day_start, w.day_end, w.urgent_24x7, u.totp_enabled,
+  EXISTS (SELECT 1 FROM users m WHERE m.manager_id = u.id) AS is_manager`;
 
 export const toHours = (r: HoursRow): Hours => ({
   timeZone: r.time_zone,
@@ -56,6 +57,7 @@ export const toHours = (r: HoursRow): Hours => ({
 export const toUser = (r: UserRow): User => ({
   id: r.id, email: r.email, name: r.name, role: r.role, department: r.department,
   workspaceId: r.workspace_id, workspaceName: r.workspace_name, demo: r.demo, hours: toHours(r),
+  twoFactor: !!r.totp_enabled, isManager: !!r.is_manager,
 });
 
 export async function userById(db: Db, id: number): Promise<User | null> {

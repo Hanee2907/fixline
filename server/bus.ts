@@ -82,7 +82,7 @@ export class Bus {
   /** Hands an event to this server's open connections that are allowed to hear it. */
   private deliver(workspaceId: number, e: LiveEvent) {
     for (const l of this.rooms.get(workspaceId) ?? []) {
-      const forRequester = e.type === 'incident' || e.type === 'article' || (e.requesterId !== undefined && e.requesterId === l.userId);
+      const forRequester = e.type === 'incident' || e.type === 'article' || (e.requesterId !== undefined && e.requesterId === l.userId) || (e.approverId !== undefined && e.approverId === l.userId);
       if (l.role !== 'requester' || forRequester) l.send(e);
     }
   }

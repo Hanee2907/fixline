@@ -3,6 +3,7 @@ import { isOpen, minutesLabel, opensLabel, type Hours } from '../../../shared/ho
 import type { Email, User, WorkspaceSettings } from '../../../shared/types';
 import { ApiError, api } from '../api';
 import { ago, useToast } from '../ui';
+import { SsoPanel, TwoFactorPanel } from './Security';
 
 const DAY_NAMES = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 const toMinutes = (v: string) => { const [h, m] = v.split(':').map(Number); return h * 60 + (m || 0); };
@@ -18,9 +19,11 @@ export function SettingsPage({ user, onUser }: { user: User; onUser: (u: User) =
   const admin = user.role === 'admin';
   return (
     <main className="page">
-      <div className="page-h"><div><h1>Settings &amp; email</h1><p>{s.name}</p></div></div>
+      <div className="page-h"><div><h1>Settings &amp; security</h1><p>{s.name}</p></div></div>
       <div className="settings">
         <HoursPanel hours={user.hours} canEdit={admin} onSaved={(u) => { onUser(u); toast('Working hours saved. New tickets use them right away.'); }} />
+        <TwoFactorPanel user={user} onUser={onUser} />
+        <SsoPanel settings={s} canEdit={admin} demo={user.demo} onSaved={() => { api.settings().then(setS); toast('Saved. People with that email domain can now sign in with their work account.'); }} />
         <EmailPanel settings={s} onTested={() => { loadEmails(); }} />
         <div className="panel">
           <h3>Outbox <span>{s.emailDelivery === 'smtp' ? 'sent through your mail server' : 'recorded here (not delivered yet)'}</span></h3>
