@@ -11,12 +11,14 @@ const production = process.env.NODE_ENV === 'production';
 const port = Number((production ? process.env.PORT : process.env.API_PORT) ?? 8790);
 const WEB = 'dist/web';
 
+console.log(`Starting Fixline API (${process.env.DATABASE_URL ? 'PostgreSQL' : 'local PGlite'})…`);
 const db = await connect(process.env.DATABASE_URL, process.env.PGLITE_DIR ?? '.data/pglite');
+console.log('Database ready');
 await migrate(db);
 await removeOldDemos(db);
 setInterval(() => removeOldDemos(db).catch(console.error), 60 * 60_000).unref();
 
-const { app } = createApp(db, { secureCookies: production });
+const { app } = createApp(db, { secureCookies: production && process.env.SECURE_COOKIES !== 'false' });
 
 // In production one server hands out both the API and the built web app.
 if (existsSync(WEB)) {

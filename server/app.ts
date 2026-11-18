@@ -201,7 +201,7 @@ export function createApp(db: Db, opts: { secureCookies?: boolean; bus?: Bus; ra
       stream.onAbort(unsubscribe);
       await stream.writeSSE({ event: 'ready', data: '{}' });
       while (!stream.aborted) {
-        await stream.sleep(25_000);
+        await stream.sleep(15_000);
         await stream.writeSSE({ event: 'ping', data: '{}' }).catch(() => {});
       }
       unsubscribe();
