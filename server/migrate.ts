@@ -103,6 +103,63 @@ const MIGRATIONS: { id: string; sql: string }[] = [
       );
     `,
   },
+  {
+    id: '002_hours_files_email_presence',
+    sql: `
+      ALTER TABLE workspaces ADD COLUMN time_zone   TEXT    NOT NULL DEFAULT 'America/Toronto';
+      ALTER TABLE workspaces ADD COLUMN work_days   TEXT    NOT NULL DEFAULT '1,2,3,4,5';
+      ALTER TABLE workspaces ADD COLUMN day_start   INT     NOT NULL DEFAULT 480;
+      ALTER TABLE workspaces ADD COLUMN day_end     INT     NOT NULL DEFAULT 1020;
+      ALTER TABLE workspaces ADD COLUMN urgent_24x7 BOOLEAN NOT NULL DEFAULT TRUE;
+      ALTER TABLE workspaces ADD COLUMN inbound_token TEXT UNIQUE;
+
+      ALTER TABLE tickets ADD COLUMN paused_resolve_left BIGINT;
+      ALTER TABLE tickets ADD COLUMN paused_respond_left BIGINT;
+
+      ALTER TABLE messages ADD COLUMN via TEXT NOT NULL DEFAULT 'web';
+
+      CREATE TABLE attachments (
+        id          SERIAL PRIMARY KEY,
+        ticket_id   INT  NOT NULL REFERENCES tickets(id) ON DELETE CASCADE,
+        message_id  INT  REFERENCES messages(id) ON DELETE CASCADE,
+        name        TEXT NOT NULL,
+        type        TEXT NOT NULL,
+        size        INT  NOT NULL,
+        internal    BOOLEAN NOT NULL DEFAULT FALSE,
+        data        BYTEA NOT NULL,
+        uploaded_by INT REFERENCES users(id) ON DELETE SET NULL,
+        created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+      );
+      CREATE INDEX attachments_ticket ON attachments(ticket_id);
+
+      CREATE TABLE emails (
+        id           SERIAL PRIMARY KEY,
+        workspace_id INT  REFERENCES workspaces(id) ON DELETE CASCADE,
+        to_email     TEXT NOT NULL,
+        subject      TEXT NOT NULL,
+        body         TEXT NOT NULL,
+        kind         TEXT NOT NULL,
+        ticket_id    INT  REFERENCES tickets(id) ON DELETE SET NULL,
+        status       TEXT NOT NULL DEFAULT 'logged',
+        created_at   TIMESTAMPTZ NOT NULL DEFAULT now()
+      );
+      CREATE INDEX emails_workspace ON emails(workspace_id, created_at DESC);
+
+      CREATE TABLE password_resets (
+        token_hash TEXT PRIMARY KEY,
+        user_id    INT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        expires_at TIMESTAMPTZ NOT NULL
+      );
+
+      CREATE TABLE presence (
+        user_id      INT  NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        workspace_id INT  NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+        server_id    TEXT NOT NULL,
+        seen_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+        PRIMARY KEY (user_id, server_id)
+      );
+    `,
+  },
 ];
 
 export async function migrate(db: Db) {

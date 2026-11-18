@@ -18,6 +18,7 @@ export interface User {
   workspaceId: number;
   workspaceName: string;
   demo: boolean;
+  hours: import('./hours.js').Hours;
 }
 
 export interface Person {
@@ -48,10 +49,21 @@ export interface Ticket {
   responseDueAt: string;
   dueAt: string;
   pausedAt: string | null;
+  /** working time left on the fix clock when the ticket was paused */
+  pausedRemaining: number | null;
   solvedAt: string | null;
   resolution: string;
   rating: 'good' | 'bad' | null;
   incidentId: number | null;
+}
+
+export interface Attachment {
+  id: number;
+  messageId: number | null;
+  name: string;
+  type: string;
+  size: number;
+  internal: boolean;
 }
 
 export interface Message {
@@ -61,6 +73,34 @@ export interface Message {
   body: string;
   author: Person | null;
   createdAt: string;
+  via: 'web' | 'email';
+  attachments: Attachment[];
+}
+
+/** A file on its way up: base64 data from the browser or an inbound email. */
+export interface Upload {
+  name: string;
+  type: string;
+  data: string;
+}
+
+export interface Email {
+  id: number;
+  to: string;
+  subject: string;
+  body: string;
+  kind: string;
+  ticketId: number | null;
+  status: 'sent' | 'logged' | 'failed';
+  createdAt: string;
+}
+
+export interface WorkspaceSettings {
+  name: string;
+  joinCode: string | null;
+  inboundAddress: string | null;
+  hours: import('./hours.js').Hours;
+  emailDelivery: 'smtp' | 'log';
 }
 
 export interface Article {

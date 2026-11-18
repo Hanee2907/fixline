@@ -42,7 +42,7 @@ const email = () => `t-${randomBytes(5).toString('hex')}@example.com`;
 async function deskWithEmployee() {
   const admin = browser();
   await admin.post('/api/auth/signup', { name: 'Ada Admin', email: email(), password: 'long enough pw', workspaceName: 'Test IT' });
-  const { body: ws } = await admin.get('/api/workspace');
+  const { body: ws } = await admin.get('/api/settings');
   const emp = browser();
   const r = await emp.post('/api/auth/signup', { name: 'Eve Employee', email: email(), password: 'long enough pw', joinCode: ws.joinCode });
   expect(r.status).toBe(201);
@@ -59,7 +59,7 @@ describe('accounts and roles', () => {
 
   it('keeps IT-only pages from employees', async () => {
     const { emp } = await deskWithEmployee();
-    for (const p of ['/api/people', '/api/kpis', '/api/reports', '/api/macros', '/api/workspace']) expect((await emp.get(p)).status).toBe(403);
+    for (const p of ['/api/people', '/api/kpis', '/api/reports', '/api/macros', '/api/settings']) expect((await emp.get(p)).status).toBe(403);
     expect((await browser().get('/api/tickets')).status).toBe(401);
   });
 
@@ -84,7 +84,7 @@ describe('tickets', () => {
     expect((await admin.get('/api/tickets')).body.tickets.map((x: Ticket) => x.id)).toContain(t.id);
 
     // A second employee in the same desk can't see it.
-    const { body: ws } = await admin.get('/api/workspace');
+    const { body: ws } = await admin.get('/api/settings');
     const other = browser();
     await other.post('/api/auth/signup', { name: 'Other', email: email(), password: 'long enough pw', joinCode: ws.joinCode });
     expect((await other.get(`/api/tickets/${t.id}`)).status).toBe(404);
@@ -112,7 +112,7 @@ describe('tickets', () => {
     expect((await emp.patch(`/api/tickets/${t.id}`, { priority: 1 })).status).toBe(403);
   });
 
-  it('waiting pauses the clock, and the deadline moves by the time spent waiting', async () => {
+  it('waiting pauses the clock and a reply from the employee resumes it', async () => {
     const { admin, emp } = await deskWithEmployee();
     const t: Ticket = (await emp.post('/api/tickets', { subject: 'Need Visio licence', description: 'request' })).body.ticket;
     await admin.patch(`/api/tickets/${t.id}`, { status: 'waiting', waitingReason: 'Waiting for manager approval' });
@@ -125,9 +125,8 @@ describe('tickets', () => {
     const after = (await admin.get(`/api/tickets/${t.id}`)).body.ticket as Ticket;
     expect(after.status).toBe('open');
     expect(after.pausedAt).toBeNull();
-    const moved = (Date.parse(after.dueAt) - Date.parse(before.dueAt)) / 60_000;
-    expect(moved).toBeGreaterThanOrEqual(59);
-    expect(moved).toBeLessThan(62);
+    // (The exact working-time maths is covered in features.test.ts.)
+    expect(Date.parse(after.dueAt)).toBeGreaterThanOrEqual(Date.parse(before.dueAt));
   });
 
   it('resolving can save the fix as a guide; the employee rates it and can reopen', async () => {

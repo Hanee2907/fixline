@@ -1,3 +1,4 @@
+import { ALWAYS_OPEN, addWorkingTime, clockAlwaysRuns, isOpen, workingTimeBetween, type Hours } from './hours.js';
 import type { Priority, Ticket } from './types.js';
 
 const MIN = 60_000;
@@ -11,10 +12,11 @@ export const SLA: Record<Priority, { label: string; respond: number; resolve: nu
   4: { label: 'Low', respond: 8 * HOUR, resolve: 5 * 24 * HOUR },
 };
 
-export function targetsFor(priority: Priority, from: Date) {
+/** Deadlines for a ticket that arrives at `from`, counting only working time. */
+export function targetsFor(priority: Priority, from: Date, hours: Hours = ALWAYS_OPEN) {
   return {
-    responseDueAt: new Date(from.getTime() + SLA[priority].respond),
-    dueAt: new Date(from.getTime() + SLA[priority].resolve),
+    responseDueAt: new Date(addWorkingTime(from.getTime(), SLA[priority].respond, hours, priority)),
+    dueAt: new Date(addWorkingTime(from.getTime(), SLA[priority].resolve, hours, priority)),
   };
 }
 
@@ -22,47 +24,64 @@ export type Clock = 'respond' | 'resolve' | 'paused' | 'met' | 'missed';
 
 export interface SlaState {
   clock: Clock;
-  /** milliseconds left until the active target; negative once it's missed */
+  /** working milliseconds left until the active target; negative once it's missed */
   left: number;
   /** total length of the active target, for the progress bar */
   total: number;
   /** 0..1 of the target used up */
   used: number;
   tone: 'ok' | 'warn' | 'danger' | 'muted' | 'done';
+  /** the desk is closed right now, so this clock isn't moving */
+  afterHours: boolean;
 }
 
+type SlaTicket = Pick<Ticket, 'priority' | 'status' | 'createdAt' | 'firstResponseAt' | 'responseDueAt' | 'dueAt' | 'pausedAt' | 'solvedAt'> & { pausedRemaining?: number | null };
+
 /**
- * Where a ticket stands against its targets right now.
+ * Where a ticket stands against its targets right now, in working time.
  * Before anyone replies, the first-response clock runs; after that, the fix clock.
- * While a ticket waits on the user or a part, the clock is paused.
+ * While a ticket waits on the user or a part, the clock is paused; outside working hours it stands still.
  */
-export function slaState(t: Pick<Ticket, 'priority' | 'status' | 'createdAt' | 'firstResponseAt' | 'responseDueAt' | 'dueAt' | 'pausedAt' | 'solvedAt'>, now = Date.now()): SlaState {
+export function slaState(t: SlaTicket, now = Date.now(), hours: Hours = ALWAYS_OPEN): SlaState {
+  const p = t.priority;
   const created = Date.parse(t.createdAt);
+  const between = (a: number, b: number) => workingTimeBetween(a, b, hours, p);
   if (t.status === 'solved') {
     const solved = Date.parse(t.solvedAt ?? t.createdAt);
     const due = Date.parse(t.dueAt);
-    const total = due - created;
-    return { clock: solved <= due ? 'met' : 'missed', left: due - solved, total, used: Math.min(1, (solved - created) / total), tone: 'done' };
+    const total = SLA[p].resolve;
+    return { clock: solved <= due ? 'met' : 'missed', left: between(solved, due), total, used: Math.min(1, between(created, solved) / total), tone: 'done', afterHours: false };
   }
   if (t.status === 'waiting' && t.pausedAt) {
-    const due = Date.parse(t.dueAt);
-    const paused = Date.parse(t.pausedAt);
-    const total = due - created;
-    return { clock: 'paused', left: due - paused, total, used: Math.min(1, (paused - created) / total), tone: 'muted' };
+    const total = SLA[p].resolve;
+    const left = t.pausedRemaining ?? between(Date.parse(t.pausedAt), Date.parse(t.dueAt));
+    return { clock: 'paused', left, total, used: Math.min(1, Math.max(0, 1 - left / total)), tone: 'muted', afterHours: false };
   }
   const responding = !t.firstResponseAt;
   const due = Date.parse(responding ? t.responseDueAt : t.dueAt);
-  const total = Math.max(1, due - created);
-  const left = due - now;
-  const used = Math.min(1, Math.max(0, (now - created) / total));
+  const total = responding ? SLA[p].respond : SLA[p].resolve;
+  const left = between(now, due);
+  const used = Math.min(1, Math.max(0, 1 - left / total));
+  const afterHours = !clockAlwaysRuns(hours, p) && !isOpen(now, hours);
   // Amber from halfway, red in the last stretch (or the final 10 minutes).
   const tone = left < 0 || used >= 0.85 || left < 10 * MIN ? 'danger' : used >= 0.5 ? 'warn' : 'ok';
-  return { clock: left < 0 ? 'missed' : responding ? 'respond' : 'resolve', left, total, used, tone };
+  return { clock: left < 0 ? 'missed' : responding ? 'respond' : 'resolve', left, total, used, tone, afterHours };
 }
 
-/** When a paused ticket starts again, the deadlines move by however long it waited. */
-export function resumeShift(pausedAt: string, now: Date) {
-  return Math.max(0, now.getTime() - Date.parse(pausedAt));
+/** Working time left on each clock at the moment a ticket is paused, so resuming can pick up exactly there. */
+export function remainingAtPause(t: Pick<Ticket, 'priority' | 'dueAt' | 'responseDueAt'>, now: Date, hours: Hours = ALWAYS_OPEN) {
+  return {
+    resolve: workingTimeBetween(now.getTime(), Date.parse(t.dueAt), hours, t.priority),
+    respond: workingTimeBetween(now.getTime(), Date.parse(t.responseDueAt), hours, t.priority),
+  };
+}
+
+/** New deadlines when a paused ticket starts again: the same working time that was left, counted from now. */
+export function resumeTargets(remaining: { resolve: number; respond: number }, priority: Priority, now: Date, hours: Hours = ALWAYS_OPEN) {
+  return {
+    dueAt: new Date(addWorkingTime(now.getTime(), Math.max(0, remaining.resolve), hours, priority)),
+    responseDueAt: new Date(addWorkingTime(now.getTime(), Math.max(0, remaining.respond), hours, priority)),
+  };
 }
 
 /** "12m", "1h 05m", "2d 4h", "−8m" */

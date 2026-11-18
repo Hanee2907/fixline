@@ -1,5 +1,8 @@
 import type { Db } from './db.js';
-import type { Article, Category, Incident, Message, Person, Priority, Role, Status, Ticket } from '../shared/types.js';
+import type { Article, Attachment, Category, Incident, Message, Person, Priority, Role, Status, Ticket } from '../shared/types.js';
+import type { Hours } from '../shared/hours.js';
+import { toHours, type HoursRow } from './auth.js';
+import type { CheckedFile } from './files.js';
 
 const iso = (v: unknown): string => new Date(v as string).toISOString();
 const isoOrNull = (v: unknown): string | null => (v == null ? null : iso(v));
@@ -38,6 +41,7 @@ export function toTicket(r: Row): Ticket {
     responseDueAt: iso(r.response_due_at),
     dueAt: iso(r.due_at),
     pausedAt: isoOrNull(r.paused_at),
+    pausedRemaining: r.paused_resolve_left == null ? null : Number(r.paused_resolve_left),
     solvedAt: isoOrNull(r.solved_at),
     resolution: r.resolution as string,
     rating: (r.rating as Ticket['rating']) ?? null,
@@ -50,12 +54,21 @@ export async function getTicket(db: Db, workspaceId: number, id: number): Promis
   return rows[0] ? toTicket(rows[0]) : null;
 }
 
+export async function listAttachments(db: Db, ticketId: number, includeInternal: boolean): Promise<Attachment[]> {
+  const { rows } = await db.query<Row>(
+    `SELECT id, message_id, name, type, size, internal FROM attachments WHERE ticket_id = $1 ${includeInternal ? '' : 'AND NOT internal'} ORDER BY id`,
+    [ticketId],
+  );
+  return rows.map((r) => ({ id: r.id as number, messageId: (r.message_id as number) ?? null, name: r.name as string, type: r.type as string, size: r.size as number, internal: r.internal as boolean }));
+}
+
 export async function listMessages(db: Db, ticketId: number, includeNotes: boolean): Promise<Message[]> {
   const { rows } = await db.query<Row>(
     `SELECT m.*, u.name, u.email, u.role, u.department FROM messages m LEFT JOIN users u ON u.id = m.author_id
       WHERE m.ticket_id = $1 ${includeNotes ? '' : "AND m.kind <> 'note'"} ORDER BY m.created_at, m.id`,
     [ticketId],
   );
+  const files = await listAttachments(db, ticketId, includeNotes);
   return rows.map((r) => ({
     id: r.id as number,
     ticketId: r.ticket_id as number,
@@ -63,11 +76,29 @@ export async function listMessages(db: Db, ticketId: number, includeNotes: boole
     body: r.body as string,
     author: r.author_id ? ({ id: r.author_id, name: r.name, email: r.email, role: r.role, department: r.department } as Person) : null,
     createdAt: iso(r.created_at),
+    via: (r.via as Message['via']) ?? 'web',
+    attachments: files.filter((f) => f.messageId === r.id),
   }));
 }
 
-export async function addMessage(db: Db, ticketId: number, authorId: number | null, kind: Message['kind'], body: string) {
-  await db.query('INSERT INTO messages (ticket_id, author_id, kind, body) VALUES ($1, $2, $3, $4)', [ticketId, authorId, kind, body]);
+export async function addMessage(db: Db, ticketId: number, authorId: number | null, kind: Message['kind'], body: string, via: Message['via'] = 'web'): Promise<number> {
+  const { rows } = await db.query<{ id: number }>('INSERT INTO messages (ticket_id, author_id, kind, body, via) VALUES ($1, $2, $3, $4, $5) RETURNING id', [ticketId, authorId, kind, body, via]);
+  return rows[0].id;
+}
+
+/** Files are stored in PostgreSQL itself, so every server sees them and backups include them. */
+export async function saveAttachments(db: Db, ticketId: number, messageId: number | null, files: CheckedFile[], uploadedBy: number | null, internal: boolean) {
+  for (const f of files) {
+    await db.query(
+      'INSERT INTO attachments (ticket_id, message_id, name, type, size, internal, data, uploaded_by) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)',
+      [ticketId, messageId, f.name, f.type, f.size, internal, f.data, uploadedBy],
+    );
+  }
+}
+
+export async function workspaceHours(db: Db, workspaceId: number): Promise<Hours> {
+  const { rows } = await db.query<HoursRow>('SELECT time_zone, work_days, day_start, day_end, urgent_24x7 FROM workspaces WHERE id = $1', [workspaceId]);
+  return toHours(rows[0]);
 }
 
 export const toArticle = (r: Row): Article => ({

@@ -3,6 +3,7 @@ import { SLA } from '../shared/sla.js';
 import type { Category, Priority } from '../shared/types.js';
 import type { Db } from './db.js';
 import { hashPassword } from './auth.js';
+import { samplePasswordPrompt } from './png.js';
 
 /** A made-up manufacturer, so the demo never looks like a real company's help desk. */
 const COMPANY = 'Northwind Manufacturing';
@@ -70,13 +71,16 @@ const HISTORY: [string, Category, Priority, string][] = [
 const rng = (seed: number) => () => ((seed = (seed * 1664525 + 1013904223) % 4294967296) / 4294967296);
 const MIN = 60_000;
 
-export async function createDemoWorkspace(db: Db, now = new Date()) {
+export async function createDemoWorkspace(db: Db, now = new Date(), timeZone = 'America/Toronto') {
   const rand = rng(11);
   const pick = <T,>(list: readonly T[]) => list[Math.floor(rand() * list.length)];
   const tag = randomBytes(5).toString('hex');
+  // The demo desk is open 7:00–23:00 every day in the visitor's own time zone, so it feels alive
+  // at most hours; at night the countdowns show "after hours", which is the feature working.
   const { rows: ws } = await db.query<{ id: number }>(
-    `INSERT INTO workspaces (name, join_code, demo) VALUES ($1, $2, TRUE) RETURNING id`,
-    [COMPANY, `demo-${tag}`],
+    `INSERT INTO workspaces (name, join_code, demo, time_zone, work_days, day_start, day_end, urgent_24x7, inbound_token)
+     VALUES ($1, $2, TRUE, $3, '0,1,2,3,4,5,6', 420, 1380, TRUE, $4) RETURNING id`,
+    [COMPANY, `demo-${tag}`, timeZone, randomBytes(18).toString('base64url')],
   );
   const workspaceId = ws[0].id;
   const pw = await hashPassword(randomBytes(24).toString('hex')); // nobody can sign in to a demo with a password
@@ -147,6 +151,7 @@ export async function createDemoWorkspace(db: Db, now = new Date()) {
   );
 
   seeds.sort((a, b) => b.ago - a.ago);
+  const ticketIds: Record<string, { id: number; number: number }> = {};
   let number = 1001;
   for (const s of seeds) {
     const created = new Date(now.getTime() - s.ago * MIN);
@@ -155,16 +160,18 @@ export async function createDemoWorkspace(db: Db, now = new Date()) {
     const due = new Date(created.getTime() + SLA[s.priority].resolve);
     const solvedAt = s.status === 'solved' ? at(s.solvedAfter ?? 30) : null;
     const pausedAt = s.pausedAgo != null ? new Date(now.getTime() - s.pausedAgo * MIN) : null;
+    const pausedLeft = pausedAt ? { resolve: due.getTime() - pausedAt.getTime(), respond: responseDue.getTime() - pausedAt.getTime() } : null;
     const { rows } = await db.query<{ id: number }>(
       `INSERT INTO tickets (workspace_id, number, subject, description, category, priority, status, waiting_reason, requester_id, assignee_id,
                             device, location, channel, created_at, updated_at, first_response_at, response_due_at, due_at, paused_at, solved_at,
-                            resolution, rating, incident_id)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,'portal',$13,$14,$15,$16,$17,$18,$19,$20,$21,$22) RETURNING id`,
+                            resolution, rating, incident_id, paused_resolve_left, paused_respond_left)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,'portal',$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24) RETURNING id`,
       [workspaceId, number++, s.subject, s.description, s.category, s.priority, s.status, s.waitingReason ?? '', ids[s.requester], s.assignee ? ids[s.assignee] : null,
         s.device ?? '', s.location ?? '', created, solvedAt ?? pausedAt ?? created, s.responded != null ? at(s.responded) : null, responseDue, due, pausedAt, solvedAt,
-        s.resolution ?? '', s.rating ?? null, s.incident ? incidentId : null],
+        s.resolution ?? '', s.rating ?? null, s.incident ? incidentId : null, pausedLeft?.resolve ?? null, pausedLeft?.respond ?? null],
     );
     const ticketId = rows[0].id;
+    ticketIds[s.subject] = { id: ticketId, number: number - 1 };
     await db.query('INSERT INTO messages (ticket_id, author_id, kind, body, created_at) VALUES ($1, $2, $3, $4, $5)', [ticketId, null, 'event', 'Ticket created', created]);
     for (const [who, kind, body, after] of s.thread ?? []) {
       await db.query('INSERT INTO messages (ticket_id, author_id, kind, body, created_at) VALUES ($1, $2, $3, $4, $5)', [ticketId, ids[who], kind, body, at(after)]);
@@ -174,6 +181,23 @@ export async function createDemoWorkspace(db: Db, now = new Date()) {
     }
   }
   await db.query('UPDATE workspaces SET next_number = $2 WHERE id = $1', [workspaceId, number]);
+
+  // Maya attached a screenshot of the password prompt.
+  const outlook = ticketIds['Outlook keeps asking for password'];
+  const shot = samplePasswordPrompt();
+  await db.query('INSERT INTO attachments (ticket_id, message_id, name, type, size, data, uploaded_by) VALUES ($1, NULL, $2, $3, $4, $5, $6)', [
+    outlook.id, 'outlook-password-prompt.png', 'image/png', shot.length, shot, ids.maya,
+  ]);
+
+  // A few emails in the outbox, as the desk would have sent them today (demo desks never really send).
+  const mail = (to: string, subject: string, body: string, kind: string, ticket: { id: number }, ago: number) =>
+    db.query('INSERT INTO emails (workspace_id, to_email, subject, body, kind, ticket_id, status, created_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)', [
+      workspaceId, `${to}.${tag}@demo.fixline`, subject, body, kind, ticket.id, 'logged', new Date(now.getTime() - ago * MIN),
+    ]);
+  const key = (subject: string) => `[FX-${ticketIds[subject].number}]`;
+  await mail('tom', `${key('Account locked after password change')} Fixed: Account locked after password change`, 'Hi Tom,\n\nGood news: your ticket is fixed.\n\nUnlocked the account; the old password was still saved on Tom’s phone.', 'solved', ticketIds['Account locked after password change'], 46);
+  await mail('ana', `Re: ${key('Can’t print to 2nd floor printer')} Can’t print to 2nd floor printer`, 'Alex Rivera from IT replied:\n\nThanks Ana! Could you send a screenshot of the print queue?', 'reply', ticketIds['Can’t print to 2nd floor printer'], 395);
+  await mail('maya', `${key('Outlook keeps asking for password')} We got your request: Outlook keeps asking for password`, 'Hi Maya,\n\nThanks for letting IT know. Your ticket is in the queue as Email, high priority. Someone will reply within 30m of working time.', 'created', outlook, 18);
   return { workspaceId, agentId: ids.you, requesterId: ids.maya };
 }
 
