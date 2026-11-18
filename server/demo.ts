@@ -1,5 +1,6 @@
 import { randomBytes } from 'node:crypto';
-import { SLA } from '../shared/sla.js';
+import { SLA, remainingAtPause, targetsFor } from '../shared/sla.js';
+import type { Hours } from '../shared/hours.js';
 import type { Category, Priority } from '../shared/types.js';
 import type { Db } from './db.js';
 import { hashPassword } from './auth.js';
@@ -83,6 +84,7 @@ export async function createDemoWorkspace(db: Db, now = new Date(), timeZone = '
     [COMPANY, `demo-${tag}`, timeZone, randomBytes(18).toString('base64url')],
   );
   const workspaceId = ws[0].id;
+  const hours: Hours = { timeZone, days: [0, 1, 2, 3, 4, 5, 6], start: 420, end: 1380, urgent24x7: true };
   const pw = await hashPassword(randomBytes(24).toString('hex')); // nobody can sign in to a demo with a password
 
   const ids: Record<string, number> = {};
@@ -156,11 +158,11 @@ export async function createDemoWorkspace(db: Db, now = new Date(), timeZone = '
   for (const s of seeds) {
     const created = new Date(now.getTime() - s.ago * MIN);
     const at = (m: number) => new Date(created.getTime() + m * MIN);
-    const responseDue = new Date(created.getTime() + SLA[s.priority].respond);
-    const due = new Date(created.getTime() + SLA[s.priority].resolve);
+    // Deadlines count working time only, exactly as for real tickets.
+    const { responseDueAt: responseDue, dueAt: due } = targetsFor(s.priority, created, hours);
     const solvedAt = s.status === 'solved' ? at(s.solvedAfter ?? 30) : null;
     const pausedAt = s.pausedAgo != null ? new Date(now.getTime() - s.pausedAgo * MIN) : null;
-    const pausedLeft = pausedAt ? { resolve: due.getTime() - pausedAt.getTime(), respond: responseDue.getTime() - pausedAt.getTime() } : null;
+    const pausedLeft = pausedAt ? remainingAtPause({ priority: s.priority, dueAt: due.toISOString(), responseDueAt: responseDue.toISOString() }, pausedAt, hours) : null;
     const { rows } = await db.query<{ id: number }>(
       `INSERT INTO tickets (workspace_id, number, subject, description, category, priority, status, waiting_reason, requester_id, assignee_id,
                             device, location, channel, created_at, updated_at, first_response_at, response_due_at, due_at, paused_at, solved_at,

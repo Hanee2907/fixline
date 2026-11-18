@@ -1,5 +1,6 @@
 import { createContext, useContext, useEffect, useRef, useState, type ReactNode } from 'react';
 import { SLA, formatLeft, slaState } from '../../shared/sla';
+import type { Hours } from '../../shared/hours';
 import type { Person, Ticket } from '../../shared/types';
 
 /* ---------- Icons (inline, so there's no icon font to load) ---------- */
@@ -20,6 +21,8 @@ const paths: Record<string, string> = {
   swap: 'M7 16V4M7 4 3 8M7 4l4 4M17 8v12M17 20l4-4M17 20l-4-4',
   search: 'M11 19a8 8 0 1 0 0-16 8 8 0 0 0 0 16zM21 21l-4.3-4.3',
   back: 'M19 12H5M12 19l-7-7 7-7',
+  gear: 'M12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6zM19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z',
+  clip: 'M21.4 11.1l-9.2 9.2a6 6 0 0 1-8.5-8.5l9.2-9.2a4 4 0 0 1 5.7 5.7l-9.2 9.2a2 2 0 0 1-2.8-2.8l8.5-8.5',
 };
 export function Icon({ name, size = 16 }: { name: keyof typeof paths | string; size?: number }) {
   return (
@@ -62,11 +65,13 @@ export function useNow(ms = 1000) {
   return now;
 }
 
-export function slaLabel(t: Ticket, now: number) {
-  const s = slaState(t, now);
+export function slaLabel(t: Ticket, now: number, hours?: Hours) {
+  const s = slaState(t, now, hours);
   if (s.clock === 'paused') return { text: 'paused', tone: 'muted' as const, s };
   if (s.clock === 'met') return { text: formatLeft(Date.parse(t.solvedAt!) - Date.parse(t.createdAt)), tone: 'done' as const, s };
   if (t.status === 'solved') return { text: 'late', tone: 'danger' as const, s };
+  // Outside working hours the clock stands still: show what's left, dimmed, with a moon.
+  if (s.afterHours && s.left >= 0) return { text: `☾ ${formatLeft(s.left)}`, tone: 'muted' as const, s };
   return { text: formatLeft(s.left), tone: s.tone, s };
 }
 

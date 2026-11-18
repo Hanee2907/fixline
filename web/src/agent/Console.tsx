@@ -6,12 +6,13 @@ import { Avatar, Icon, Mark, slaLabel, useNow, useTheme, useToast } from '../ui'
 import { NewTicketDialog } from './NewTicket';
 import { Palette } from './Palette';
 import { IncidentsPage, KnowledgePage, PeoplePage, ReportsPage } from './Pages';
+import { SettingsPage } from './Settings';
 import { TicketPane } from './TicketPane';
 
 export type Route =
   | { page: 'queue'; view: View; id?: number }
   | { page: 'kb'; id?: number }
-  | { page: 'reports' } | { page: 'people' } | { page: 'incidents' };
+  | { page: 'reports' } | { page: 'people' } | { page: 'incidents' } | { page: 'settings' };
 
 export function parseAgentRoute(hash: string): Route {
   const parts = hash.replace(/^#\/?/, '').split('/');
@@ -19,6 +20,7 @@ export function parseAgentRoute(hash: string): Route {
   if (parts[0] === 'reports') return { page: 'reports' };
   if (parts[0] === 'people') return { page: 'people' };
   if (parts[0] === 'incidents') return { page: 'incidents' };
+  if (parts[0] === 'settings') return { page: 'settings' };
   const view = (parts[0] === 'q' && parts[1] ? decodeURIComponent(parts[1]) : 'all') as View;
   return { page: 'queue', view, id: Number(parts[2]) || undefined };
 }
@@ -145,6 +147,7 @@ export function Console({ user, onUser }: { user: User; onUser: (u: User | null)
         {navItem('/kb', route.page === 'kb', 'book', 'Knowledge base')}
         {navItem('/reports', route.page === 'reports', 'chart', 'Reports')}
         {navItem('/people', route.page === 'people', 'users', 'People')}
+        {navItem('/settings', route.page === 'settings', 'gear', 'Settings & email')}
         <div className="grp incidents">Live incidents</div>
         {activeIncidents.map((i) => (
           <a key={i.id} href={`#/q/incident:${i.id}`} className={`it incidents${view === `incident:${i.id}` ? ' on' : ''}`}><span className="dot live" />{i.title}<em>{i.linked}</em></a>
@@ -189,13 +192,13 @@ export function Console({ user, onUser }: { user: User; onUser: (u: User | null)
               {tickets === null && <div className="empty">Loading…</div>}
               {tickets?.length === 0 && <div className="empty"><b>{view === 'solved' ? 'Nothing solved yet' : 'All clear'}</b>{view === 'solved' ? 'Solved tickets show up here.' : 'No tickets here right now.'}</div>}
               {visibleTickets.map((t) => {
-                const s = slaLabel(t, now);
+                const s = slaLabel(t, now, user.hours);
                 return (
                   <a key={t.id} href={`#/q/${view}/${t.id}`} className={`row${t.id === selected ? ' sel' : ''}${fresh.has(t.id) ? ' fresh' : ''}${t.status === 'solved' ? ' solved' : ''}`}
                     aria-current={t.id === selected ? 'true' : undefined}>
                     <span className={`pr ${t.status === 'solved' ? 'ok' : `p${t.priority}`}`}>{t.status === 'solved' ? '✓' : `P${t.priority}`}</span>
                     <b>{t.subject}</b>
-                    <span className={`sla tone-${s.tone}`} title={s.s.clock === 'respond' ? 'Time left to first response' : s.s.clock === 'paused' ? t.waitingReason : 'Time left to fix'}>{s.text}</span>
+                    <span className={`sla tone-${s.tone}`} title={s.s.afterHours ? 'Outside working hours: the clock is paused' : s.s.clock === 'respond' ? 'Time left to first response' : s.s.clock === 'paused' ? t.waitingReason : 'Time left to fix'}>{s.text}</span>
                     <span className="sub"><span className="mono">{t.key}</span>· {t.requester.name.split(' ')[0]} {t.requester.name.split(' ')[1]?.[0] ?? ''}. · {t.incidentId ? 'linked to incident' : t.status === 'waiting' ? t.waitingReason.toLowerCase() : t.category}</span>
                     <span className="ag"><Avatar person={t.assignee} size="sm" me={t.assignee?.id === user.id} /></span>
                   </a>
@@ -212,6 +215,7 @@ export function Console({ user, onUser }: { user: User; onUser: (u: User | null)
       {route.page === 'reports' && <ReportsPage />}
       {route.page === 'people' && <PeoplePage user={user} />}
       {route.page === 'incidents' && <IncidentsPage incidents={incidents} onChanged={loadSide} />}
+      {route.page === 'settings' && <SettingsPage user={user} onUser={onUser} />}
 
       {palette && <Palette onClose={() => setPalette(false)} onNew={() => { setPalette(false); setCreating(true); }} />}
       {creating && <NewTicketDialog onClose={() => setCreating(false)} onCreated={(t) => { setCreating(false); loadList(); loadSide(); go(`/q/all/${t.id}`); toast(`${t.key} created`); }} />}

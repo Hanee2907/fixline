@@ -3,6 +3,8 @@ import { SLA, formatClock, formatMinutes, slaState } from '../../../shared/sla';
 import { CATEGORIES, type Category, type Incident, type Macro, type Person, type Priority, type User } from '../../../shared/types';
 import { ApiError, api, type TicketDetail } from '../api';
 import { Avatar, Dialog, Icon, celebrate, clockTime, useNow, useToast } from '../ui';
+import { AttachButton, Attachments, PendingFiles, useUploads } from '../files';
+import { opensLabel } from '../../../shared/hours';
 
 let peopleCache: Promise<(Person & { open: number })[]> | null = null;
 let macroCache: Promise<Macro[]> | null = null;
@@ -25,6 +27,7 @@ export function TicketPane({ id, user, rev, incidents, onChanged, onBack }: {
   const [macroOpen, setMacroOpen] = useState(false);
   const [macroIndex, setMacroIndex] = useState(0);
   const box = useRef<HTMLTextAreaElement>(null);
+  const files = useUploads();
   const toast = useToast();
   const now = useNow(1000);
 
@@ -53,12 +56,13 @@ export function TicketPane({ id, user, rev, incidents, onChanged, onBack }: {
 
   const send = async (e?: FormEvent) => {
     e?.preventDefault();
-    if (!t || !draft.trim() || sending) return;
+    if (!t || (!draft.trim() && !files.files.length) || sending) return;
     setSending(true);
     try {
-      const r = await api.message(t.id, { kind: note ? 'note' : 'reply', body: draft.trim(), articleId });
+      const r = await api.message(t.id, { kind: note ? 'note' : 'reply', body: draft.trim(), articleId, attachments: files.uploads() });
       setD((prev) => (prev ? { ...prev, ticket: r.ticket, messages: r.messages } : prev));
       setDraft('');
+      files.clear();
       setArticleId(undefined);
       onChanged();
       toast(note ? 'Note added' : `Reply sent to ${t.requester.name.split(' ')[0]}`);
@@ -103,11 +107,11 @@ export function TicketPane({ id, user, rev, incidents, onChanged, onBack }: {
   if (missing) return <section className="detail"><div className="empty" style={{ margin: 'auto' }}><b>Ticket not found</b>It may have been removed.</div></section>;
   if (!d || !t) return <section className="detail"><div className="empty" style={{ margin: 'auto' }}>Loading…</div></section>;
 
-  const s = slaState(t, now);
+  const s = slaState(t, now, user.hours);
   const timerTone = s.clock === 'paused' ? '' : s.tone === 'danger' ? 'danger' : s.tone === 'warn' ? 'warn' : '';
   const barColour = s.tone === 'danger' ? 'linear-gradient(90deg,var(--amb),var(--red))' : s.tone === 'warn' ? 'var(--amb)' : s.tone === 'done' ? 'var(--accent)' : 'var(--accent)';
-  const timerText = s.clock === 'paused' ? 'paused' : t.status === 'solved' ? (s.clock === 'met' ? 'on time' : 'late') : formatClock(s.left);
-  const timerSub = s.clock === 'respond' ? 'left to first response' : s.clock === 'resolve' ? 'left to fix' : s.clock === 'paused' ? t.waitingReason || 'waiting' : s.clock === 'missed' && t.status !== 'solved' ? (t.firstResponseAt ? 'past the fix target' : 'past the response target') : `solved ${clockTime(t.solvedAt!)}`;
+  const timerText = s.clock === 'paused' ? 'paused' : t.status === 'solved' ? (s.clock === 'met' ? 'on time' : 'late') : `${s.afterHours && s.left >= 0 ? '☾ ' : ''}${formatClock(s.left)}`;
+  const timerSub = s.afterHours && s.left >= 0 ? `${s.clock === 'respond' ? 'to first response' : 'to fix'} · after hours, ${opensLabel(now, user.hours)}` : s.clock === 'respond' ? 'left to first response' : s.clock === 'resolve' ? 'left to fix' : s.clock === 'paused' ? t.waitingReason || 'waiting' : s.clock === 'missed' && t.status !== 'solved' ? (t.firstResponseAt ? 'past the fix target' : 'past the response target') : `solved ${clockTime(t.solvedAt!)}`;
   const linked = incidents.find((i) => i.id === t.incidentId);
 
   return (
@@ -127,7 +131,7 @@ export function TicketPane({ id, user, rev, incidents, onChanged, onBack }: {
               <div className="tgt">P{t.priority} target<b>{formatMinutes((s.clock === 'respond' ? SLA[t.priority].respond : SLA[t.priority].resolve) / 60000)}</b></div>
             </div>
             {linked && <div className="sys" style={{ paddingLeft: 0 }}><span className="dot live" /> Part of incident <b>{linked.title}</b></div>}
-            <div className="ev"><Avatar person={t.requester} /><div className="card"><small>{t.requester.name} · {clockTime(t.createdAt)} · via {t.channel}</small>{t.description || t.subject}</div></div>
+            <div className="ev"><Avatar person={t.requester} /><div className="card"><small>{t.requester.name} · {clockTime(t.createdAt)} · via {t.channel}</small>{t.description || t.subject}<Attachments items={d.attachments} /></div></div>
             {d.messages.map((m) => {
               if (m.kind === 'event') return <div key={m.id} className="sys">{m.body} · {clockTime(m.createdAt)}</div>;
               const mine = m.author?.id === user.id;
@@ -135,7 +139,7 @@ export function TicketPane({ id, user, rev, incidents, onChanged, onBack }: {
               return (
                 <div key={m.id} className={`ev${m.kind === 'note' ? ' note' : ''}${mine && m.kind !== 'note' ? ' mine' : ''}`}>
                   <Avatar person={m.author} me={mine} />
-                  <div className="card"><small>{m.kind === 'note' ? '🔒 Internal note · ' : ''}{mine ? 'You' : m.author?.name ?? 'Fixline'} · {clockTime(m.createdAt)}{fromRequester ? ' · via portal' : ''}</small>{m.body}</div>
+                  <div className="card"><small>{m.kind === 'note' ? '🔒 Internal note · ' : ''}{mine ? 'You' : m.author?.name ?? 'Fixline'} · {clockTime(m.createdAt)}{m.via === 'email' ? <span className="via">email</span> : fromRequester ? ' · via portal' : ''}</small>{m.body}<Attachments items={m.attachments} /></div>
                 </div>
               );
             })}
@@ -144,7 +148,7 @@ export function TicketPane({ id, user, rev, incidents, onChanged, onBack }: {
             )}
           </div>
           {t.status !== 'solved' ? (
-            <form className={`composer${note ? ' note' : ''}`} onSubmit={send}>
+            <form className={`composer${note ? ' note' : ''}${files.over ? ' dropping' : ''}`} onSubmit={send} {...files.dropProps}>
               {macroOpen && filteredMacros.length > 0 && (
                 <div className="macros" role="listbox" aria-label="Saved replies">
                   {filteredMacros.map((m, i) => (
@@ -155,16 +159,19 @@ export function TicketPane({ id, user, rev, incidents, onChanged, onBack }: {
                 </div>
               )}
               <label className="sr-only" htmlFor="reply">{note ? 'Internal note' : `Reply to ${t.requester.name}`}</label>
-              <textarea id="reply" ref={box} value={draft} onKeyDown={onBoxKey}
-                placeholder={note ? 'Internal note, only IT sees this…' : `Reply to ${t.requester.name.split(' ')[0]}… type / for saved replies`}
+              <PendingFiles files={files.files} remove={files.remove} />
+              {files.error && <p className="file-err" role="alert">{files.error}</p>}
+              <textarea id="reply" ref={box} value={draft} onKeyDown={onBoxKey} onPaste={files.onPaste}
+                placeholder={note ? 'Internal note, only IT sees this… (paste screenshots too)' : `Reply to ${t.requester.name.split(' ')[0]}… type / for saved replies, Ctrl+V to paste a screenshot`}
                 onChange={(e) => { setDraft(e.target.value); const open = e.target.value.startsWith('/') && !e.target.value.includes('\n'); setMacroOpen(open); if (open) setMacroIndex(0); }} />
               <div className="a">
+                <AttachButton onFiles={files.add} />
                 <button type="button" className={`b${note ? ' on' : ''}`} onClick={() => { setNote(!note); box.current?.focus(); }} aria-pressed={note}>🔒 Note</button>
                 <button type="button" className="b" onClick={() => { setDraft('/'); setMacroOpen(true); setMacroIndex(0); box.current?.focus(); }}>/ Saved replies</button>
                 {t.status === 'waiting'
                   ? <button type="button" className="b" onClick={() => update({ status: 'open' }, 'Clock running again')}>▶ Resume</button>
                   : <button type="button" className="b" onClick={() => setWaiting(true)}>⏸ Pause</button>}
-                <button className="b send" disabled={!draft.trim() || sending}>{note ? 'Add note' : 'Send'} <kbd style={{ border: 0, color: 'inherit', opacity: .6 }}>Ctrl ↵</kbd></button>
+                <button className="b send" disabled={(!draft.trim() && !files.files.length) || sending}>{note ? 'Add note' : 'Send'} <kbd style={{ border: 0, color: 'inherit', opacity: .6 }}>Ctrl ↵</kbd></button>
                 <button type="button" className="b solve" onClick={() => setResolving(true)}>Resolve</button>
               </div>
             </form>

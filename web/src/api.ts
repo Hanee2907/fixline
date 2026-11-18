@@ -1,6 +1,7 @@
 import type {
-  Article, Category, Incident, Kpis, LiveEvent, Macro, Message, Person, Priority, Reports, Suggestion, Ticket, User,
+  Article, Attachment, Category, Email, Incident, Kpis, LiveEvent, Macro, Message, Person, Priority, Reports, Suggestion, Ticket, Upload, User, WorkspaceSettings,
 } from '../../shared/types';
+import type { Hours } from '../../shared/hours';
 
 export class ApiError extends Error {
   constructor(message: string, readonly status: number, readonly field?: string) {
@@ -21,23 +22,25 @@ async function call<T>(method: string, path: string, body?: unknown): Promise<T>
 }
 
 export type View = 'all' | 'mine' | 'unassigned' | 'breaching' | 'waiting' | 'solved' | `incident:${number}`;
-export interface TicketDetail { ticket: Ticket; messages: Message[]; suggestions: Suggestion[] }
+export interface TicketDetail { ticket: Ticket; messages: Message[]; attachments: Attachment[]; suggestions: Suggestion[] }
 
 export const api = {
   me: () => call<{ user: User | null }>('GET', '/api/auth/me'),
   login: (b: { email: string; password: string }) => call<{ user: User }>('POST', '/api/auth/login', b),
   signup: (b: { name: string; email: string; password: string; workspaceName?: string; joinCode?: string }) => call<{ user: User }>('POST', '/api/auth/signup', b),
-  demo: (as: 'agent' | 'requester') => call<{ user: User }>('POST', '/api/auth/demo', { as }),
+  demo: (as: 'agent' | 'requester') => call<{ user: User }>('POST', '/api/auth/demo', { as, timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone }),
+  forgot: (email: string) => call<{ message: string }>('POST', '/api/auth/forgot', { email }),
+  reset: (token: string, password: string) => call<{ user: User }>('POST', '/api/auth/reset', { token, password }),
   switchDemo: () => call<{ user: User }>('POST', '/api/demo/switch', {}),
   logout: () => call('POST', '/api/auth/logout', {}),
 
   tickets: (view: View = 'all', q = '') => call<{ tickets: Ticket[] }>('GET', `/api/tickets?view=${encodeURIComponent(view)}${q ? `&q=${encodeURIComponent(q)}` : ''}`),
   ticket: (id: number) => call<TicketDetail>('GET', `/api/tickets/${id}`),
-  create: (b: { subject: string; description?: string; category?: Category; priority?: Priority; device?: string; location?: string; requesterId?: number; channel?: string }) =>
+  create: (b: { subject: string; description?: string; category?: Category; priority?: Priority; device?: string; location?: string; requesterId?: number; channel?: string; attachments?: Upload[] }) =>
     call<{ ticket: Ticket }>('POST', '/api/tickets', b),
   update: (id: number, b: Partial<{ status: 'new' | 'open' | 'waiting'; waitingReason: string; priority: Priority; category: Category; assigneeId: number | null; incidentId: number | null }>) =>
     call<{ ticket: Ticket }>('PATCH', `/api/tickets/${id}`, b),
-  message: (id: number, b: { kind: 'reply' | 'note'; body: string; articleId?: number }) => call<{ ticket: Ticket; messages: Message[] }>('POST', `/api/tickets/${id}/messages`, b),
+  message: (id: number, b: { kind: 'reply' | 'note'; body: string; articleId?: number; attachments?: Upload[] }) => call<{ ticket: Ticket; messages: Message[] }>('POST', `/api/tickets/${id}/messages`, b),
   resolve: (id: number, b: { resolution: string; notify?: boolean; saveArticle?: string }) => call<{ ticket: Ticket; articleId: number | null }>('POST', `/api/tickets/${id}/resolve`, b),
   reopen: (id: number) => call<{ ticket: Ticket }>('POST', `/api/tickets/${id}/reopen`, {}),
   rate: (id: number, rating: 'good' | 'bad', comment?: string) => call<{ ticket: Ticket }>('POST', `/api/tickets/${id}/rate`, { rating, comment }),
@@ -57,7 +60,11 @@ export const api = {
 
   people: () => call<{ people: (Person & { open: number })[] }>('GET', '/api/people'),
   setRole: (id: number, role: Person['role']) => call('PATCH', `/api/people/${id}`, { role }),
-  workspace: () => call<{ name: string; joinCode: string | null }>('GET', '/api/workspace'),
+  settings: () => call<WorkspaceSettings>('GET', '/api/settings'),
+  saveSettings: (b: { name?: string; hours?: Hours }) => call<{ user: User }>('PUT', '/api/settings', b),
+  emails: () => call<{ emails: Email[] }>('GET', '/api/emails'),
+  /** The same address an email provider would post to; used by the "send a test email" box. */
+  inbound: (address: string, b: { from: string; subject: string; text: string }) => call<{ ticketId: number; action: string }>('POST', new URL(address).pathname, b),
   kpis: () => call<{ kpis: Kpis }>('GET', '/api/kpis'),
   reports: () => call<{ reports: Reports }>('GET', '/api/reports'),
 };

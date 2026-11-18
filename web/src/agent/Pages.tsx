@@ -135,7 +135,7 @@ export function PeoplePage({ user }: { user: User }) {
   const [code, setCode] = useState<string | null>(null);
   const toast = useToast();
   const load = () => api.people().then((r) => setPeople(r.people)).catch(() => {});
-  useEffect(() => { load(); api.workspace().then((w) => setCode(w.joinCode)).catch(() => {}); }, []);
+  useEffect(() => { load(); api.settings().then((w) => setCode(w.joinCode)).catch(() => {}); }, []);
   return (
     <main className="page">
       <div className="page-h"><div><h1>People</h1><p>{user.workspaceName}</p></div></div>

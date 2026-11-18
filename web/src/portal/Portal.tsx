@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useState, type FormEvent } from 'react';
 import { SLA } from '../../../shared/sla';
-import type { Article, Category, Incident, Message, Priority, Suggestion, Ticket, User } from '../../../shared/types';
+import type { Article, Attachment, Category, Incident, Message, Priority, Suggestion, Ticket, User } from '../../../shared/types';
 import { ApiError, api, connectLive } from '../api';
 import { Avatar, Icon, Mark, ago, celebrate, clockTime, useTheme, useToast } from '../ui';
+import { AttachButton, Attachments, PendingFiles, useUploads } from '../files';
 
 type Route = { page: 'home' } | { page: 'ticket'; id: number } | { page: 'guide'; id: number } | { page: 'tickets' };
 const parse = (hash: string): Route => {
@@ -84,6 +85,7 @@ function Home({ user, tickets, onCreated }: { user: User; tickets: Ticket[]; onC
   const [guess, setGuess] = useState<{ category: Category; priority: Priority } | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
+  const files = useUploads();
   const toast = useToast();
 
   // As they type: guides that might fix it, and how the ticket would be sorted.
@@ -99,7 +101,7 @@ function Home({ user, tickets, onCreated }: { user: User; tickets: Ticket[]; onC
     setBusy(true);
     setError('');
     try {
-      const r = await api.create({ subject, description: details });
+      const r = await api.create({ subject, description: details, attachments: files.uploads() });
       toast(`Sent! Your ticket is ${r.ticket.key}`);
       onCreated(r.ticket);
     } catch (err) {
@@ -113,12 +115,15 @@ function Home({ user, tickets, onCreated }: { user: User; tickets: Ticket[]; onC
       <section className="hero">
         <h1>Hi {user.name.split(' ')[0]}, <em>what’s going wrong?</em></h1>
         <p>Describe it in your own words. You’ll see fixes as you type, and if none work, IT gets it straight away.</p>
-        <form className="ask" onSubmit={submit}>
+        <form className={`ask${files.over ? ' dropping' : ''}`} onSubmit={submit} {...files.dropProps}>
           <label className="sr-only" htmlFor="ask-s">Describe the problem</label>
-          <input id="ask-s" autoFocus value={subject} onChange={(e) => setSubject(e.target.value)} placeholder="e.g. Outlook keeps asking for my password" maxLength={140} />
+          <input id="ask-s" autoFocus value={subject} onChange={(e) => setSubject(e.target.value)} onPaste={files.onPaste} placeholder="e.g. Outlook keeps asking for my password" maxLength={140} />
           <label className="sr-only" htmlFor="ask-d">More details</label>
-          <textarea id="ask-d" value={details} onChange={(e) => setDetails(e.target.value)} placeholder="Anything else? When did it start, what have you tried, which computer…" />
+          <textarea id="ask-d" value={details} onChange={(e) => setDetails(e.target.value)} onPaste={files.onPaste} placeholder="Anything else? When did it start, what have you tried… Paste a screenshot with Ctrl+V." />
+          <PendingFiles files={files.files} remove={files.remove} />
+          {files.error && <p className="file-err" role="alert">{files.error}</p>}
           <div className="bar">
+            <AttachButton onFiles={files.add} label="📎 Add a screenshot" />
             <span className="guess" aria-live="polite">{guess ? <>Will go to IT as <span className="tag">{guess.category}</span><span className="tag">{SLA[guess.priority].label}</span> · first reply within {SLA[guess.priority].respond / 60000 >= 60 ? `${SLA[guess.priority].respond / 3600000}h` : `${SLA[guess.priority].respond / 60000} min`}</> : 'IT replies within 2 hours on working days, much faster if it’s urgent.'}</span>
             <button className="send" disabled={busy || subject.trim().length < 3}>{busy ? 'Sending…' : 'Send to IT'}</button>
           </div>
@@ -159,9 +164,10 @@ function TicketList({ tickets, compact }: { tickets: Ticket[]; compact?: boolean
 }
 
 function TicketView({ id, rev, onChanged }: { id: number; rev: number; onChanged: () => void }) {
-  const [d, setD] = useState<{ ticket: Ticket; messages: Message[] } | null>(null);
+  const [d, setD] = useState<{ ticket: Ticket; messages: Message[]; attachments: Attachment[] } | null>(null);
   const [reply, setReply] = useState('');
   const [rated, setRated] = useState(false);
+  const files = useUploads();
   const toast = useToast();
   const load = useCallback(() => api.ticket(id).then(setD).catch(() => setD(null)), [id]);
   useEffect(() => { load(); }, [load, rev]);
@@ -179,11 +185,11 @@ function TicketView({ id, rev, onChanged }: { id: number; rev: number; onChanged
       {t.status === 'waiting' && <div className="banner" style={{ marginTop: 16, borderColor: 'var(--note-line)', background: 'var(--note-bg)' }}><span>⏸</span><div><b>{t.waitingReason}</b><p>Reply below if IT asked you something. The ticket picks up again as soon as you do.</p></div></div>}
 
       <div style={{ display: 'grid', gap: 12, marginTop: 22 }}>
-        <div className="ev"><Avatar person={t.requester} /><div className="card"><small>You · {clockTime(t.createdAt)}</small>{t.description || t.subject}</div></div>
+        <div className="ev"><Avatar person={t.requester} /><div className="card"><small>You · {clockTime(t.createdAt)}</small>{t.description || t.subject}<Attachments items={d.attachments} /></div></div>
         {d.messages.filter((m) => m.kind !== 'event').map((m) => (
           <div key={m.id} className={`ev${m.author?.id === t.requester.id ? '' : ' mine'}`}>
             <Avatar person={m.author} />
-            <div className="card"><small>{m.author?.id === t.requester.id ? 'You' : `${m.author?.name ?? 'IT'} · IT`} · {clockTime(m.createdAt)}</small>{m.body}</div>
+            <div className="card"><small>{m.author?.id === t.requester.id ? 'You' : `${m.author?.name ?? 'IT'} · IT`} · {clockTime(m.createdAt)}{m.via === 'email' ? <span className="via">email</span> : null}</small>{m.body}<Attachments items={m.attachments} /></div>
           </div>
         ))}
       </div>
@@ -197,18 +203,23 @@ function TicketView({ id, rev, onChanged }: { id: number; rev: number; onChanged
       )}
       {t.rating && <p style={{ marginTop: 16, color: 'var(--mu)' }}>You rated this {t.rating === 'good' ? '👍' : '👎'}. Thanks!</p>}
 
-      <form className="composer" style={{ margin: '20px 0 0' }} onSubmit={async (e) => {
+      <form className={`composer${files.over ? ' dropping' : ''}`} style={{ margin: '20px 0 0' }} {...files.dropProps} onSubmit={async (e) => {
         e.preventDefault();
-        if (!reply.trim()) return;
-        await api.message(t.id, { kind: 'reply', body: reply.trim() });
+        if (!reply.trim() && !files.files.length) return;
+        try {
+          await api.message(t.id, { kind: 'reply', body: reply.trim(), attachments: files.uploads() });
+        } catch (err) { toast(err instanceof ApiError ? err.message : 'Could not send'); return; }
         setReply('');
+        files.clear();
         load();
         onChanged();
         toast('Sent to IT');
       }}>
         <label className="sr-only" htmlFor="p-reply">Reply to IT</label>
-        <textarea id="p-reply" value={reply} onChange={(e) => setReply(e.target.value)} placeholder={t.status === 'solved' ? 'Still having trouble? Reply and the ticket reopens.' : 'Add a message for IT…'} />
-        <div className="a"><button className="b send" disabled={!reply.trim()}>Send</button></div>
+        <PendingFiles files={files.files} remove={files.remove} />
+        {files.error && <p className="file-err" role="alert">{files.error}</p>}
+        <textarea id="p-reply" value={reply} onChange={(e) => setReply(e.target.value)} onPaste={files.onPaste} placeholder={t.status === 'solved' ? 'Still having trouble? Reply and the ticket reopens.' : 'Add a message for IT…'} />
+        <div className="a"><AttachButton onFiles={files.add} /><button className="b send" disabled={!reply.trim() && !files.files.length}>Send</button></div>
       </form>
     </section>
   );
