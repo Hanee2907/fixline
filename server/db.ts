@@ -8,6 +8,11 @@ export interface Db {
   exec(sql: string): Promise<void>;
   /** PostgreSQL LISTEN: every server connected to this database hears NOTIFY on the channel. */
   listen(channel: string, onMessage: (payload: string) => void): Promise<() => Promise<void>>;
+  /**
+   * Runs `fn` on one connection while holding a PostgreSQL advisory lock, so only one
+   * process at a time does it (for example, several servers starting together and migrating).
+   */
+  exclusive<T>(lockKey: number, fn: (db: Pick<Db, 'query' | 'exec'>) => Promise<T>): Promise<T>;
   close(): Promise<void>;
 }
 
@@ -44,6 +49,22 @@ export async function connect(url = process.env.DATABASE_URL, dataDir?: string):
         await start();
         return async () => { stopped = true; await client?.end().catch(() => {}); };
       },
+      async exclusive(lockKey, fn) {
+        const client = await pool.connect();
+        try {
+          await client.query('SELECT pg_advisory_lock($1)', [lockKey]);
+          try {
+            return await fn({
+              query: (sql, params) => client.query(sql, params as unknown[]) as never,
+              exec: async (sql) => void (await client.query(sql)),
+            });
+          } finally {
+            await client.query('SELECT pg_advisory_unlock($1)', [lockKey]);
+          }
+        } finally {
+          client.release();
+        }
+      },
       close: () => pool.end(),
     };
   }
@@ -57,6 +78,11 @@ export async function connect(url = process.env.DATABASE_URL, dataDir?: string):
       const off = await lite.listen(channel, onMessage);
       return async () => { await off(); };
     },
+    // PGlite is a single in-process connection, so there is nothing to race against.
+    exclusive: (_lockKey, fn) => fn({
+      query: (sql, params) => lite.query(sql, params as unknown[]) as never,
+      exec: async (sql) => void (await lite.exec(sql)),
+    }),
     close: () => lite.close(),
   };
 }

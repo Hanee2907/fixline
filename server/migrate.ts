@@ -295,12 +295,19 @@ const MIGRATIONS: { id: string; sql: string }[] = [
   },
 ];
 
+/** Any fixed number works; every Fixline process uses the same one to take turns migrating. */
+const MIGRATION_LOCK = 4_729_311;
+
 export async function migrate(db: Db) {
-  await db.query(`CREATE TABLE IF NOT EXISTS fixline_migrations (id TEXT PRIMARY KEY, at TIMESTAMPTZ NOT NULL DEFAULT now())`);
-  const { rows } = await db.query<{ id: string }>('SELECT id FROM fixline_migrations');
-  const done = new Set(rows.map((r) => r.id));
-  for (const m of MIGRATIONS) {
-    if (done.has(m.id)) continue;
-    await db.exec(`BEGIN;\n${m.sql}\nINSERT INTO fixline_migrations (id) VALUES ('${m.id}');\nCOMMIT;`);
-  }
+  // Several servers (or test files) can start at once. The lock makes them migrate one at a time,
+  // and each re-reads what's already applied once it has the lock.
+  await db.exclusive(MIGRATION_LOCK, async (tx) => {
+    await tx.query(`CREATE TABLE IF NOT EXISTS fixline_migrations (id TEXT PRIMARY KEY, at TIMESTAMPTZ NOT NULL DEFAULT now())`);
+    const { rows } = await tx.query<{ id: string }>('SELECT id FROM fixline_migrations');
+    const done = new Set(rows.map((r) => r.id));
+    for (const m of MIGRATIONS) {
+      if (done.has(m.id)) continue;
+      await tx.exec(`BEGIN;\n${m.sql}\nINSERT INTO fixline_migrations (id) VALUES ('${m.id}');\nCOMMIT;`);
+    }
+  });
 }
